@@ -102,6 +102,8 @@ func handlerRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer db.Close()
+
 	records, err := sqlagent.Execute(db, payload.SQL, payload.Params)
 
 	if err != nil {

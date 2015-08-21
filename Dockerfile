@@ -1,4 +1,4 @@
-FROM golang:1.4
+FROM golang:1.5
 
 ENV LD_LIBRARY_PATH /go/src/github.com/chop-dbhi/sql-agent/lib/oracle/instantclient_12_1
 ENV ORACLE_HOME /go/src/github.com/chop-dbhi/sql-agent/lib/oracle/instantclient_12_1
@@ -23,5 +23,4 @@ WORKDIR /go/src/github.com/chop-dbhi/sql-agent
 RUN make install
 RUN make build
 
-ENTRYPOINT ["/go/bin/sql-agent"]
-CMD ["-host", "0.0.0.0"]
+CMD ["/go/bin/sql-agent", "-host", "0.0.0.0"]

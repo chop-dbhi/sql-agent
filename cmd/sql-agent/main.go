@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"mime"
 	"net/http"
 
 	"github.com/chop-dbhi/sql-agent"
@@ -38,6 +39,42 @@ Example:
 
 const StatusUnprocessableEntity = 422
 
+var (
+	defaultMimetype = "application/json"
+
+	mimetypeFormats = map[string]string{
+		"application/json":     "json",
+		"application/x-ldjson": "ldjson",
+	}
+)
+
+// parseMimetype parses a mimetype from the Accept header.
+func parseMimetype(mimetype string) string {
+	mimetype, params, err := mime.ParseMediaType(mimetype)
+
+	if err != nil {
+		return ""
+	}
+
+	// No Accept header passed.
+	if mimetype == "" {
+		return defaultMimetype
+	}
+
+	switch mimetype {
+	case "application/json":
+		if params["boundary"] == "NL" {
+			return "application/x-ldjson"
+		}
+	default:
+		if _, ok := mimetypeFormats[mimetype]; !ok {
+			return ""
+		}
+	}
+
+	return mimetype
+}
+
 func init() {
 	flag.Usage = func() {
 		fmt.Println(usage)
@@ -61,7 +98,7 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	log.Printf("* Listening on %s...\n", addr)
 
-	http.HandleFunc("/", handlerRequest)
+	http.HandleFunc("/", handleRequest)
 
 	log.Fatal(http.ListenAndServe(addr, nil))
 }
@@ -73,9 +110,18 @@ type Payload struct {
 	Params     map[string]interface{}
 }
 
-func handlerRequest(w http.ResponseWriter, r *http.Request) {
+func handleRequest(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Validate the Accept header and parse it to ensure it is
+	// supported.
+	mimetype := r.Header.Get("Accept")
+
+	if mimetype = parseMimetype(mimetype); mimetype == "" {
+		w.WriteHeader(http.StatusNotAcceptable)
 		return
 	}
 
@@ -104,7 +150,7 @@ func handlerRequest(w http.ResponseWriter, r *http.Request) {
 
 	defer db.Close()
 
-	records, err := sqlagent.Execute(db, payload.SQL, payload.Params)
+	iter, err := sqlagent.Execute(db, payload.SQL, payload.Params)
 
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -112,9 +158,19 @@ func handlerRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err = json.NewEncoder(w).Encode(records); err != nil {
+	enc := sqlagent.NewEncoder(w)
+	w.Header().Set("content-type", mimetype)
+
+	switch mimetypeFormats[mimetype] {
+	case "json":
+		err = enc.EncodeJSON(iter)
+	case "ldjson":
+		err = enc.EncodeLDJSON(iter)
+	}
+
+	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(fmt.Sprintf("error encoding records: %s", err)))
+		w.Write([]byte(fmt.Sprintf("error encoding data: %s", err)))
 		return
 	}
 }

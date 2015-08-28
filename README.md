@@ -74,3 +74,52 @@ Other options that are supplied are passed query options if they are known, othe
 ### Constraints
 
 - Columns must be uniquely named, otherwise the conversion into a map will include only one of the values.
+
+## Development
+
+### Setup
+
+- [Install Oracle clients libraries](#install-oracle-client-libraries)
+- Run `make test-install`
+
+#### Install Oracle client libraries
+
+##### General
+
+In order to install the [go-oci8](https://github.com/mattn/go-oci8) driver, you must install Oracle's client libraries.
+
+Download the **instantclient-basic** and **instantclient-sdk** package from [Oracle's website](http://www.oracle.com/technetwork/database/features/instant-client/index-097480.html) and uncompress to the same directory. Make sure that you selected the platform and architecture.
+
+The installations instructions are listed at the bottom of the page with the download links.
+
+Install `pkg-config`.
+
+Create `oci8.pc` file in your `$PKG_CONFIG_PATH` (such as `/usr/local/lib/pkgconfig`) and add the below contents:
+
+```
+prefix=/usr/local/lib/instantclient_11_2
+libdir=${prefix}
+includedir=${prefix}/sdk/include/
+
+Name: OCI
+Description: Oracle database engine
+Version: 11.2
+Libs: -L${libdir} -lclntsh
+Libs.private:
+Cflags: -I${includedir}
+```
+
+Change the `prefix` to path to location of the Oracle libraries.
+
+##### OS X specific Help
+
+Assuming the `instantclient_11_2` folder is located in `/usr/loca/lib`, link the following files:
+
+```bash
+ln /usr/local/lib/instantclient_11_2/libclntsh.dylib /usr/local/lib/libclntsh.dylib
+ln /usr/local/lib/instantclient_11_2/libocci.dylib.* /usr/local/lib/libocci.dylib.*
+ln /usr/local/lib/instantclient_11_2/libociei.dylib /usr/local/lib/libociei.dylib
+ln /usr/local/lib/instantclient_11_2/libnnz11.dylib /usr/local/lib/libnnz11.dylib
+```
+
+Install `pkg-config` via [Homebrew](http://brew.sh/), `brew install pkg-config`.

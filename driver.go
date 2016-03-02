@@ -228,11 +228,12 @@ var ErrUnknownDriver = errors.New("sqlagent: Unknown driver")
 
 // Drivers contains a map of public driver names to registered driver names.
 var Drivers = map[string]string{
-	"postgres":  "postgres",
-	"mysql":     "mysql",
-	"mariadb":   "mysql",
-	"sqlite":    "sqlite3",
-	"mssql":     "mssql",
-	"sqlserver": "mssql",
-	"oracle":    "oci8",
+	"postgresql": "postgres",
+	"postgres":   "postgres",
+	"mysql":      "mysql",
+	"mariadb":    "mysql",
+	"sqlite":     "sqlite3",
+	"mssql":      "mssql",
+	"sqlserver":  "mssql",
+	"oracle":     "oci8",
 }

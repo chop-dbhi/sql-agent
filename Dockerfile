@@ -20,7 +20,7 @@ RUN ln -s libclntsh.so.12.1 libclntsh.so
 RUN ln -s libocci.so.12.1 libocci.so
 
 WORKDIR /go/src/github.com/chop-dbhi/sql-agent
-RUN make install
+RUN make cmd-install
 RUN make build
 
 CMD ["/go/bin/sql-agent", "-host", "0.0.0.0"]

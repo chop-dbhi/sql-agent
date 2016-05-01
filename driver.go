@@ -5,12 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-
-	_ "github.com/denisenkom/go-mssqldb"
-	_ "github.com/go-sql-driver/mysql"
-	_ "github.com/lib/pq"
-	_ "github.com/mattn/go-oci8"
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // Connector takes a map of connection parameters and converts them into a

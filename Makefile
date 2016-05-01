@@ -8,15 +8,15 @@ doc:
 
 install:
 	go get github.com/jmoiron/sqlx
+
+test-install: install
+	go get golang.org/x/tools/cmd/cover
+	go get github.com/mattn/goveralls
 	go get github.com/lib/pq
 	go get github.com/denisenkom/go-mssqldb
 	go get github.com/go-sql-driver/mysql
 	go get github.com/mattn/go-sqlite3
 	go get github.com/mattn/go-oci8
-
-test-install: install
-	go get golang.org/x/tools/cmd/cover
-	go get github.com/mattn/goveralls
 
 test:
 	go test -cover ./...

@@ -75,16 +75,32 @@ Other options that are supplied are passed query options if they are known, othe
 
 - Columns must be uniquely named, otherwise the conversion into a map will include only one of the values.
 
-## Development
+## Library
 
-### Setup
+The SQL Agent library does not include any drivers by default. To add them include them like so:
 
-- [Install Oracle clients libraries](#install-oracle-client-libraries)
-- Run `make test-install`
+```go
+package main
 
-#### Install Oracle client libraries
+import (
+	_ "github.com/alexbrainman/odbc"
+	_ "github.com/denisenkom/go-mssqldb"
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-oci8"
+	_ "github.com/mattn/go-sqlite3"
+)
 
-##### General
+func main() {
+    //...
+}
+```
+
+## Help
+
+### Install Oracle client libraries
+
+#### General
 
 In order to install the [go-oci8](https://github.com/mattn/go-oci8) driver, you must install Oracle's client libraries.
 
@@ -111,7 +127,7 @@ Cflags: -I${includedir}
 
 Change the `prefix` to path to location of the Oracle libraries.
 
-##### OS X specific Help
+#### OS X specific Help
 
 Assuming the `instantclient_11_2` folder is located in `/usr/loca/lib`, link the following files:
 

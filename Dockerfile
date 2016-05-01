@@ -1,4 +1,4 @@
-FROM golang:1.5
+FROM golang
 
 ENV LD_LIBRARY_PATH /go/src/github.com/chop-dbhi/sql-agent/lib/oracle/instantclient_12_1
 ENV ORACLE_HOME /go/src/github.com/chop-dbhi/sql-agent/lib/oracle/instantclient_12_1

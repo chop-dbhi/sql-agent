@@ -28,7 +28,7 @@ To execute a query, simply send a POST request with a payload containing the dri
 
 **Request**
 
-POST
+`POST`
 
 Headers:
   - `'Accept'`: `application/json` or `application/x-ldjson`
@@ -74,7 +74,6 @@ Other options that are supplied are passed query options if they are known, othe
 
 - Only `SELECT` statements are supported.
 - Statements using parameters must use the `:param` syntax and must have a corresponding entry in the `params` map.
-- The only standard
 
 ### Constraints
 

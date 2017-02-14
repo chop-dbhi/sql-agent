@@ -1,6 +1,17 @@
 package sqlagent
 
-import "github.com/jmoiron/sqlx"
+import (
+	"encoding/json"
+	"sync"
+	"time"
+
+	"github.com/jmoiron/sqlx"
+)
+
+var (
+	MaxIdleConns    = 10
+	MaxConnLifetime = 10 * time.Minute
+)
 
 // Record is a database row keyed by column name. This requires the columns to be
 // uniquely named.
@@ -93,4 +104,37 @@ func Execute(db *sqlx.DB, sql string, params map[string]interface{}) (*Iterator,
 		Cols: cols,
 		rows: rows,
 	}, nil
+}
+
+var (
+	connMap      = make(map[string]*sqlx.DB)
+	connMapMutex = &sync.Mutex{}
+)
+
+func PersistentConnect(driver string, params map[string]interface{}) (*sqlx.DB, error) {
+	var (
+		db  *sqlx.DB
+		ok  bool
+		err error
+	)
+
+	connKey, _ := json.Marshal(params)
+	key := driver + string(connKey)
+
+	connMapMutex.Lock()
+	defer connMapMutex.Unlock()
+
+	if db, ok = connMap[key]; !ok {
+		db, err = Connect(driver, params)
+		if err != nil {
+			return nil, err
+		}
+
+		db.SetMaxIdleConns(MaxIdleConns)
+		db.SetConnMaxLifetime(MaxConnLifetime)
+
+		connMap[key] = db
+	}
+
+	return db, nil
 }

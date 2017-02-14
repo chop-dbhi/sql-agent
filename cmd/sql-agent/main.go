@@ -49,6 +49,7 @@ var (
 	defaultMimetype = "application/json"
 
 	mimetypeFormats = map[string]string{
+		"*/*":                  "json",
 		"text/csv":             "csv",
 		"application/json":     "json",
 		"application/x-ldjson": "ldjson",

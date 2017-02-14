@@ -108,7 +108,9 @@ func main() {
 
 	http.HandleFunc("/", handleRequest)
 
-	log.Fatal(http.ListenAndServe(addr, nil))
+	err := http.ListenAndServe(addr, nil)
+	sqlagent.Shutdown()
+	log.Fatal(err)
 }
 
 type Payload struct {
@@ -148,15 +150,12 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := sqlagent.Connect(payload.Driver, payload.Connection)
-
+	db, err := sqlagent.PersistentConnect(payload.Driver, payload.Connection)
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(fmt.Sprintf("problem connecting to database: %s", err)))
 		return
 	}
-
-	defer db.Close()
 
 	iter, err := sqlagent.Execute(db, payload.SQL, payload.Params)
 

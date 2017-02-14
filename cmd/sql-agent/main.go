@@ -49,6 +49,7 @@ var (
 	defaultMimetype = "application/json"
 
 	mimetypeFormats = map[string]string{
+		"text/csv":             "csv",
 		"application/json":     "json",
 		"application/x-ldjson": "ldjson",
 	}
@@ -164,14 +165,15 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	enc := sqlagent.NewEncoder(w)
 	w.Header().Set("content-type", mimetype)
 
 	switch mimetypeFormats[mimetype] {
+	case "csv":
+		err = sqlagent.EncodeCSV(w, iter)
 	case "json":
-		err = enc.EncodeJSON(iter)
+		err = sqlagent.EncodeJSON(w, iter)
 	case "ldjson":
-		err = enc.EncodeLDJSON(iter)
+		err = sqlagent.EncodeLDJSON(w, iter)
 	}
 
 	if err != nil {

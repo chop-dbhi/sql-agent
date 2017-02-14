@@ -31,13 +31,16 @@ To execute a query, simply send a POST request with a payload containing the dri
 `POST`
 
 Headers:
-  - `'Accept'`: `application/json` or `application/x-ldjson`
+  - `'Accept'` - required
+    - `application/json`
+    - `application/x-ldjson`
+    - `text/csv`
 
 ```json
 {
     "driver": "postgres",
     "connection": {
-        "host": "localhost",        
+        "host": "localhost",
         "user": "postgres"
     },
     "sql": "SELECT name FROM users WHERE zipcode = :zipcode",

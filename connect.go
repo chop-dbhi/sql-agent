@@ -138,3 +138,12 @@ func PersistentConnect(driver string, params map[string]interface{}) (*sqlx.DB, 
 
 	return db, nil
 }
+
+// Shutdown closes all persisted database connections.
+func Shutdown() {
+	connMapMutex.Lock()
+	for _, db := range connMap {
+		db.Close()
+	}
+	connMapMutex.Unlock()
+}

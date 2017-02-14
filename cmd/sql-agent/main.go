@@ -165,6 +165,8 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	defer iter.Close()
+
 	w.Header().Set("content-type", mimetype)
 
 	switch mimetypeFormats[mimetype] {

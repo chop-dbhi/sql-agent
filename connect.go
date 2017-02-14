@@ -8,6 +8,7 @@ type Record map[string]interface{}
 
 // Iterator provides a lazy access to the database rows.
 type Iterator struct {
+	Cols []string
 	rows *sqlx.Rows
 }
 
@@ -30,6 +31,10 @@ func (i *Iterator) Scan(r Record) error {
 	mapBytesToString(r)
 
 	return nil
+}
+
+func (i *Iterator) ScanRow(r []interface{}) error {
+	return i.rows.Scan(r...)
 }
 
 // Connect connects to a database given a driver name and set of connection parameters.
@@ -79,7 +84,13 @@ func Execute(db *sqlx.DB, sql string, params map[string]interface{}) (*Iterator,
 		return nil, err
 	}
 
+	cols, err := rows.Columns()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Iterator{
+		Cols: cols,
 		rows: rows,
 	}, nil
 }

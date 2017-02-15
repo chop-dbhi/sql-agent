@@ -1,6 +1,7 @@
 package sqlagent
 
 import (
+	"database/sql"
 	"encoding/csv"
 	"encoding/json"
 	"io"
@@ -15,8 +16,7 @@ func EncodeCSV(w io.Writer, i *Iterator) error {
 
 	// Allocate string pointers.
 	for i := range r {
-		var s string
-		r[i] = &s
+		r[i] = &sql.NullString{}
 	}
 
 	enc := csv.NewWriter(w)
@@ -31,7 +31,12 @@ func EncodeCSV(w io.Writer, i *Iterator) error {
 		}
 
 		for i, v := range r {
-			o[i] = *v.(*string)
+			x := v.(*sql.NullString)
+			if x.Valid {
+				o[i] = x.String
+			} else {
+				o[i] = ""
+			}
 		}
 
 		if err := enc.Write(o); err != nil {

@@ -1,0 +1,30 @@
+hash: 1b75a0e69281b46bf1c55d6fea2869f8d4365346745fb377f670fb0d1cf07558
+updated: 2017-02-15T06:13:16.028316423-05:00
+imports:
+- name: github.com/chop-dbhi/sql-agent
+  version: 8f975d400cbfccdc0bff02d5fcc23f5fa1e75021
+- name: github.com/denisenkom/go-mssqldb
+  version: 9e40d9d5d325edfaa84d3374bfde6e1adce02d58
+- name: github.com/go-sql-driver/mysql
+  version: a0583e0143b1624142adab07e0e97fe106d99561
+- name: github.com/jmoiron/sqlx
+  version: f980a91bdc37abef88269b8f122d7de6352102f5
+  subpackages:
+  - reflectx
+- name: github.com/lib/pq
+  version: ba5d4f7a35561e22fbdf7a39aa0070f4d460cfc0
+  subpackages:
+  - oid
+- name: github.com/mattn/go-oci8
+  version: 52120e18d58a9c88c3fff9aa6ed86251777f52e6
+- name: github.com/mattn/go-sqlite3
+  version: ca5e3819723d8eeaf170ad510e7da1d6d2e94a08
+- name: golang.org/x/crypto
+  version: 351dc6a5bf92a5f2ae22fadeee08eb6a45aa2d93
+  subpackages:
+  - md4
+- name: golang.org/x/net
+  version: e45385e9b226f570b1f086bf287b25d3d4117776
+  subpackages:
+  - context
+testImports: []

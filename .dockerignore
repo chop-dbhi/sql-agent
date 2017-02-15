@@ -1,0 +1,4 @@
+.git/
+lib/
+!lib/oracle/instantclient_12_1
+!lib/oracle/oci8.pc

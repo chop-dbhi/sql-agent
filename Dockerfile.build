@@ -1,0 +1,8 @@
+FROM golang:1.8
+
+RUN apt-get update -qq
+RUN apt-get install libaio1 pkg-config -y
+
+ADD build.sh /
+
+ENTRYPOINT ["/build.sh"]

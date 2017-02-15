@@ -1,43 +1,30 @@
-all: install
+IMAGE_NAME := dbhi/sql-agent
+PROG_NAME := sql-agent
 
-clean:
-	go clean ./...
-
-doc:
-	godoc -http=:6060
-
-install:
-	go get github.com/jmoiron/sqlx
-
-cmd-install: install
-	go get github.com/lib/pq
-	go get github.com/denisenkom/go-mssqldb
-	go get github.com/go-sql-driver/mysql
-	go get github.com/mattn/go-sqlite3
-	go get github.com/mattn/go-oci8
-
-test-install: install cmd-install
-	go get golang.org/x/tools/cmd/cover
-	go get github.com/mattn/goveralls
-
-test:
-	go test -cover ./...
-
-test-travis:
-	./test-cover.sh
-
-bench:
-	go test -run=none -bench=. -benchmem ./...
+GIT_SHA := $(or $(shell git log -1 --pretty=format:"%h" .), "latest")
+GIT_TAG := $(shell git describe --tags --exact-match . 2>/dev/null)
+GIT_BRANCH := $(shell git symbolic-ref -q --short HEAD)
 
 build:
-	go build -o $(GOPATH)/bin/sql-agent ./cmd/sql-agent
+	go build \
+		-o $(GOPATH)/bin/sql-agent \
+		./cmd/sql-agent
 
-fmt:
-	go vet ./...
-	go fmt ./...
+dist:
+	docker build -f Dockerfile.build -t dbhi/sql-agent-builder .
+	docker run --rm -it \
+		-v ${PWD}:/go/src/github.com/chop-dbhi/sql-agent \
+		dbhi/sql-agent-builder
 
-lint:
-	golint ./...
+docker:
+	docker build -t ${IMAGE_NAME}:${GIT_SHA} .
+	docker tag ${IMAGE_NAME}:${GIT_SHA} ${IMAGE_NAME}:${GIT_BRANCH}
+	if [ -n "${GIT_TAG}" ] ; then \
+		docker tag ${IMAGE_NAME}:${GIT_SHA} ${IMAGE_NAME}:${GIT_TAG} ; \
+  fi;
+	if [ "${GIT_BRANCH}" == "master" ]; then \
+		docker tag ${IMAGE_NAME}:${GIT_SHA} ${IMAGE_NAME}:latest ; \
+	fi;
 
 
-.PHONY: test proto
+.PHONY: build dist

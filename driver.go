@@ -131,7 +131,7 @@ var connectors = map[string]connector{
 	},
 
 	// MSSQL supports semicolon delimited key=value parameters.
-	// See https://github.com/denisenkom/go-mssqldb#connection-parameters
+	// See https://github.com/denisenkom/go-mssqldb#connection-parameters-and-dsn
 	"mssql": func(params map[string]interface{}) string {
 		toks := make([]string, len(params))
 		i := 0
@@ -141,7 +141,7 @@ var connectors = map[string]connector{
 			i++
 		}
 
-		return strings.Join(toks, " ")
+		return strings.Join(toks, ";")
 	},
 
 	// Oracle supports a standard URI-based connection string.

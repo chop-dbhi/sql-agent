@@ -137,6 +137,13 @@ var connectors = map[string]connector{
 		i := 0
 
 		for k, v := range params {
+			switch k {
+			case "host":
+				k = "server"
+			case "user":
+				k = "user id"
+			}
+
 			toks[i] = fmt.Sprintf("%s=%v", k, v)
 			i++
 		}

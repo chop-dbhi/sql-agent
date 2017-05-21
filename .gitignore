@@ -1,6 +1,6 @@
 .DS_Store
 *.sw?
-lib/
-dist/
+/lib
+/dist
 profile.cov
 profile.tmp

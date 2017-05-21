@@ -429,6 +429,7 @@ func (c *SQLiteConn) exec(ctx context.Context, query string, args []namedValue) 
 		if s.(*SQLiteStmt).s != nil {
 			na := s.NumInput()
 			if len(args) < na {
+				s.Close()
 				return nil, fmt.Errorf("Not enough args to execute query. Expected %d, got %d.", na, len(args))
 			}
 			for i := 0; i < na; i++ {
@@ -693,7 +694,7 @@ func (s *SQLiteStmt) bind(args []namedValue) error {
 
 	for i, v := range args {
 		if v.Name != "" {
-			cname := C.CString(v.Name)
+			cname := C.CString(":" + v.Name)
 			args[i].Ordinal = int(C.sqlite3_bind_parameter_index(s.s, cname))
 			C.free(unsafe.Pointer(cname))
 		}
@@ -765,14 +766,18 @@ func (s *SQLiteStmt) query(ctx context.Context, args []namedValue) (driver.Rows,
 		done:     make(chan struct{}),
 	}
 
-	go func() {
+	go func(db *C.sqlite3) {
 		select {
 		case <-ctx.Done():
-			C.sqlite3_interrupt(s.c.db)
-			rows.Close()
+			select {
+			case <-rows.done:
+			default:
+				C.sqlite3_interrupt(db)
+				rows.Close()
+			}
 		case <-rows.done:
 		}
-	}()
+	}(s.c.db)
 
 	return rows, nil
 }
@@ -808,13 +813,13 @@ func (s *SQLiteStmt) exec(ctx context.Context, args []namedValue) (driver.Result
 
 	done := make(chan struct{})
 	defer close(done)
-	go func() {
+	go func(db *C.sqlite3) {
 		select {
 		case <-ctx.Done():
-			C.sqlite3_interrupt(s.c.db)
+			C.sqlite3_interrupt(db)
 		case <-done:
 		}
-	}()
+	}(s.c.db)
 
 	var rowid, changes C.longlong
 	rv := C._sqlite3_step(s.s, &rowid, &changes)

@@ -1,0 +1,54 @@
+memo = "40f937d4f7aaf33f8385455d40e4b58174203190f3d8f946b691397afc37d0e5"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/chop-dbhi/sql-agent"
+  packages = ["."]
+  revision = "2f937ce2285e4249504daca09a4db6518a76680a"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/denisenkom/go-mssqldb"
+  packages = ["."]
+  revision = "06717bac1d29a4392721abdd7b43c5de6696d33b"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/go-sql-driver/mysql"
+  packages = ["."]
+  revision = "3dd7008ac1529aca1bcd8a9db75228a71ba23cac"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/jmoiron/sqlx"
+  packages = [".","reflectx"]
+  revision = "3a92b1fd96032c4490fa618370fbf98ec69b680c"
+
+[[projects]]
+  name = "github.com/lib/pq"
+  packages = [".","oid"]
+  revision = "0dad96c0b94f8dee039aa40467f767467392a0af"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/mattn/go-oci8"
+  packages = ["."]
+  revision = "52120e18d58a9c88c3fff9aa6ed86251777f52e6"
+
+[[projects]]
+  branch = "master"
+  name = "github.com/mattn/go-sqlite3"
+  packages = ["."]
+  revision = "2acfafad5870400156f6fceb12852c281cbba4d5"
+
+[[projects]]
+  branch = "master"
+  name = "golang.org/x/crypto"
+  packages = ["md4"]
+  revision = "1351f936d976c60a0a48d728281922cf63eafb8d"
+
+[[projects]]
+  branch = "master"
+  name = "golang.org/x/net"
+  packages = ["context"]
+  revision = "513929065c19401a1c7b76ecd942f9f86a0c061b"

@@ -20,13 +20,26 @@ explains how to use `database/sql` along with sqlx.
 
 ## Recent Changes
 
-* sqlx/types.JsonText has been renamed to JSONText to follow Go naming conventions.
+The addition of `sqlx.In` and `sqlx.Named`, which can be used to bind IN style
+queries and named queries respectively.
 
-This breaks backwards compatibility, but it's in a way that is trivially fixable
-(`s/JsonText/JSONText/g`).  The `types` package is both experimental and not in
-active development currently.
+```go
+ids := []int{1, 2, 3}
+query, args, err := sqlx.In("SELECT * FROM person WHERE id IN(?);", ids)
 
-* Using Go 1.6 and below with `types.JSONText` and `types.GzippedText` can be _potentially unsafe_, **especially** when used with common auto-scan sqlx idioms like `Select` and `Get`. See [golang bug #13905](https://github.com/golang/go/issues/13905).
+chris := Person{First: "Christian", Last: "Cullen"}
+query, args, err := sqlx.Named("INSERT INTO person VALUES (:first, :last);", chris)
+
+// these can be combined:
+arg := map[string]interface{}{
+    "published": true,
+    "authors": []{8, 19, 32, 44},
+}
+query, args, err := sqlx.Named("SELECT * FROM articles WHERE published=:published AND author_id IN (:authors)", arg)
+query, args, err := sqlx.In(query, args...)
+// finally, if you're using eg. pg, you can rebind the query:
+query = db.Rebind(query)
+```
 
 ### Backwards Compatibility
 

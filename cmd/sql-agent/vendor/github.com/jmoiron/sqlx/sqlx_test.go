@@ -202,7 +202,7 @@ type SliceMember struct {
 }
 
 // Note that because of field map caching, we need a new type here
-// if we've used Place already somewhere in sqlx
+// if we've used Place already soemwhere in sqlx
 type CPlace Place
 
 func MultiExec(e Execer, query string) {
@@ -328,53 +328,6 @@ func TestMissingNames(t *testing.T) {
 		}
 		rowsx.Close()
 
-		// test Named stmt
-		if !isUnsafe(db) {
-			t.Error("Expected db to be unsafe, but it isn't")
-		}
-		nstmt, err := db.PrepareNamed(`SELECT * FROM person WHERE first_name != :name`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// its internal stmt should be marked unsafe
-		if !nstmt.Stmt.unsafe {
-			t.Error("expected NamedStmt to be unsafe but its underlying stmt did not inherit safety")
-		}
-		pps = []PersonPlus{}
-		err = nstmt.Select(&pps, map[string]interface{}{"name": "Jason"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(pps) != 1 {
-			t.Errorf("Expected 1 person back, got %d", len(pps))
-		}
-
-		// test it with a safe db
-		db.unsafe = false
-		if isUnsafe(db) {
-			t.Error("expected db to be safe but it isn't")
-		}
-		nstmt, err = db.PrepareNamed(`SELECT * FROM person WHERE first_name != :name`)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// it should be safe
-		if isUnsafe(nstmt) {
-			t.Error("NamedStmt did not inherit safety")
-		}
-		nstmt.Unsafe()
-		if !isUnsafe(nstmt) {
-			t.Error("expected newly unsafed NamedStmt to be unsafe")
-		}
-		pps = []PersonPlus{}
-		err = nstmt.Select(&pps, map[string]interface{}{"name": "Jason"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(pps) != 1 {
-			t.Errorf("Expected 1 person back, got %d", len(pps))
-		}
-
 	})
 }
 
@@ -470,9 +423,9 @@ func TestEmbeddedStructs(t *testing.T) {
 func TestJoinQuery(t *testing.T) {
 	type Employee struct {
 		Name string
-		ID   int64
-		// BossID is an id into the employee table
-		BossID sql.NullInt64 `db:"boss_id"`
+		Id   int64
+		// BossId is an id into the employee table
+		BossId sql.NullInt64 `db:"boss_id"`
 	}
 	type Boss Employee
 
@@ -496,7 +449,7 @@ func TestJoinQuery(t *testing.T) {
 			if len(em.Employee.Name) == 0 {
 				t.Errorf("Expected non zero lengthed name.")
 			}
-			if em.Employee.BossID.Int64 != em.Boss.ID {
+			if em.Employee.BossId.Int64 != em.Boss.Id {
 				t.Errorf("Expected boss ids to match")
 			}
 		}
@@ -506,9 +459,9 @@ func TestJoinQuery(t *testing.T) {
 func TestJoinQueryNamedPointerStructs(t *testing.T) {
 	type Employee struct {
 		Name string
-		ID   int64
-		// BossID is an id into the employee table
-		BossID sql.NullInt64 `db:"boss_id"`
+		Id   int64
+		// BossId is an id into the employee table
+		BossId sql.NullInt64 `db:"boss_id"`
 	}
 	type Boss Employee
 
@@ -536,7 +489,7 @@ func TestJoinQueryNamedPointerStructs(t *testing.T) {
 			if len(em.Emp1.Name) == 0 || len(em.Emp2.Name) == 0 {
 				t.Errorf("Expected non zero lengthed name.")
 			}
-			if em.Emp1.BossID.Int64 != em.Boss.ID || em.Emp2.BossID.Int64 != em.Boss.ID {
+			if em.Emp1.BossId.Int64 != em.Boss.Id || em.Emp2.BossId.Int64 != em.Boss.Id {
 				t.Errorf("Expected boss ids to match")
 			}
 		}
@@ -591,20 +544,10 @@ func TestNilReceiver(t *testing.T) {
 func TestNamedQuery(t *testing.T) {
 	var schema = Schema{
 		create: `
-			CREATE TABLE place (
-				id integer PRIMARY KEY,
-				name text NULL
-			);
 			CREATE TABLE person (
 				first_name text NULL,
 				last_name text NULL,
 				email text NULL
-			);
-			CREATE TABLE placeperson (
-				first_name text NULL,
-				last_name text NULL,
-				email text NULL,
-				place_id integer NULL
 			);
 			CREATE TABLE jsperson (
 				"FIRST" text NULL,
@@ -614,8 +557,6 @@ func TestNamedQuery(t *testing.T) {
 		drop: `
 			drop table person;
 			drop table jsperson;
-			drop table place;
-			drop table placeperson;
 			`,
 	}
 
@@ -746,76 +687,6 @@ func TestNamedQuery(t *testing.T) {
 
 		db.Mapper = &old
 
-		// Test nested structs
-		type Place struct {
-			ID   int            `db:"id"`
-			Name sql.NullString `db:"name"`
-		}
-		type PlacePerson struct {
-			FirstName sql.NullString `db:"first_name"`
-			LastName  sql.NullString `db:"last_name"`
-			Email     sql.NullString
-			Place     Place `db:"place"`
-		}
-
-		pl := Place{
-			Name: sql.NullString{String: "myplace", Valid: true},
-		}
-
-		pp := PlacePerson{
-			FirstName: sql.NullString{String: "ben", Valid: true},
-			LastName:  sql.NullString{String: "doe", Valid: true},
-			Email:     sql.NullString{String: "ben@doe.com", Valid: true},
-		}
-
-		q2 := `INSERT INTO place (id, name) VALUES (1, :name)`
-		_, err = db.NamedExec(q2, pl)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		id := 1
-		pp.Place.ID = id
-
-		q3 := `INSERT INTO placeperson (first_name, last_name, email, place_id) VALUES (:first_name, :last_name, :email, :place.id)`
-		_, err = db.NamedExec(q3, pp)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		pp2 := &PlacePerson{}
-		rows, err = db.NamedQuery(`
-			SELECT
-				first_name,
-				last_name,
-				email,
-				place.id AS "place.id",
-				place.name AS "place.name"
-			FROM placeperson 
-			INNER JOIN place ON place.id = placeperson.place_id
-			WHERE
-				place.id=:place.id`, pp)
-		if err != nil {
-			log.Fatal(err)
-		}
-		for rows.Next() {
-			err = rows.StructScan(pp2)
-			if err != nil {
-				t.Error(err)
-			}
-			if pp2.FirstName.String != "ben" {
-				t.Error("Expected first name of `ben`, got " + pp2.FirstName.String)
-			}
-			if pp2.LastName.String != "doe" {
-				t.Error("Expected first name of `doe`, got " + pp2.LastName.String)
-			}
-			if pp2.Place.Name.String != "myplace" {
-				t.Error("Expected place name of `myplace`, got " + pp2.Place.Name.String)
-			}
-			if pp2.Place.ID != pp.Place.ID {
-				t.Errorf("Expected place name of %v, got %v", pp.Place.ID, pp2.Place.ID)
-			}
-		}
 	})
 }
 
@@ -1358,9 +1229,8 @@ func TestBindMap(t *testing.T) {
 
 type Message struct {
 	Text       string      `db:"string"`
-	Properties PropertyMap `db:"properties"` // Stored as JSON in the database
+	Properties PropertyMap // Stored as JSON in the database
 }
-
 type PropertyMap map[string]string
 
 // Implement driver.Valuer and sql.Scanner interfaces on PropertyMap
@@ -1397,71 +1267,30 @@ func TestEmbeddedMaps(t *testing.T) {
 			{"Hello, World", PropertyMap{"one": "1", "two": "2"}},
 			{"Thanks, Joy", PropertyMap{"pull": "request"}},
 		}
-		q1 := `INSERT INTO message (string, properties) VALUES (:string, :properties);`
+		q1 := `INSERT INTO message (string, properties) VALUES (:string, :properties)`
 		for _, m := range messages {
 			_, err := db.NamedExec(q1, m)
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
 			}
 		}
 		var count int
 		err := db.Get(&count, "SELECT count(*) FROM message")
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
 		}
 		if count != len(messages) {
-			t.Fatalf("Expected %d messages in DB, found %d", len(messages), count)
+			t.Errorf("Expected %d messages in DB, found %d", len(messages), count)
 		}
 
 		var m Message
-		err = db.Get(&m, "SELECT * FROM message LIMIT 1;")
+		err = db.Get(&m, "SELECT * FROM message LIMIT 1")
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
 		}
 		if m.Properties == nil {
-			t.Fatal("Expected m.Properties to not be nil, but it was.")
+			t.Error("Expected m.Properties to not be nil, but it was.")
 		}
-	})
-}
-
-func TestIssue197(t *testing.T) {
-	// this test actually tests for a bug in database/sql:
-	//   https://github.com/golang/go/issues/13905
-	// this potentially makes _any_ named type that is an alias for []byte
-	// unsafe to use in a lot of different ways (basically, unsafe to hold
-	// onto after loading from the database).
-	t.Skip()
-
-	type mybyte []byte
-	type Var struct{ Raw json.RawMessage }
-	type Var2 struct{ Raw []byte }
-	type Var3 struct{ Raw mybyte }
-	RunWithSchema(defaultSchema, t, func(db *DB, t *testing.T) {
-		var err error
-		var v, q Var
-		if err = db.Get(&v, `SELECT '{"a": "b"}' AS raw`); err != nil {
-			t.Fatal(err)
-		}
-		if err = db.Get(&q, `SELECT 'null' AS raw`); err != nil {
-			t.Fatal(err)
-		}
-
-		var v2, q2 Var2
-		if err = db.Get(&v2, `SELECT '{"a": "b"}' AS raw`); err != nil {
-			t.Fatal(err)
-		}
-		if err = db.Get(&q2, `SELECT 'null' AS raw`); err != nil {
-			t.Fatal(err)
-		}
-
-		var v3, q3 Var3
-		if err = db.QueryRow(`SELECT '{"a": "b"}' AS raw`).Scan(&v3.Raw); err != nil {
-			t.Fatal(err)
-		}
-		if err = db.QueryRow(`SELECT '{"c": "d"}' AS raw`).Scan(&q3.Raw); err != nil {
-			t.Fatal(err)
-		}
-		t.Fail()
 	})
 }
 

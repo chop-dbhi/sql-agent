@@ -2,14 +2,11 @@ package mssql
 
 import (
 	"encoding/binary"
-	"errors"
 	"io"
 )
 
-type packetType uint8
-
 type header struct {
-	PacketType packetType
+	PacketType uint8
 	Status     uint8
 	Size       uint16
 	Spid       uint16
@@ -17,119 +14,87 @@ type header struct {
 	Pad        uint8
 }
 
-// tdsBuffer reads and writes TDS packets of data to the transport.
-// The write and read buffers are spearate to make sending attn signals
-// possible without locks. Currently attn signals are only sent during
-// reads, not writes.
 type tdsBuffer struct {
-	transport io.ReadWriteCloser
-
-	// Write fields.
-	wbuf []byte
-	wpos uint16
-
-	// Read fields.
-	rbuf        []byte
-	rpos        uint16
-	rsize       uint16
+	buf         []byte
+	pos         uint16
+	transport   io.ReadWriteCloser
+	size        uint16
 	final       bool
-	packet_type packetType
-
-	// afterFirst is assigned to right after tdsBuffer is created and
-	// before the first use. It is executed after the first packet is
-	// writen and then removed.
-	afterFirst func()
+	packet_type uint8
+	afterFirst  func()
 }
 
 func newTdsBuffer(bufsize int, transport io.ReadWriteCloser) *tdsBuffer {
+	buf := make([]byte, bufsize)
 	w := new(tdsBuffer)
-	w.wbuf = make([]byte, bufsize)
-	w.rbuf = make([]byte, bufsize)
-	w.wpos = 0
-	w.rpos = 8
+	w.buf = buf
+	w.pos = 8
 	w.transport = transport
+	w.size = 0
 	return w
 }
 
-func (rw *tdsBuffer) ResizeBuffer(packetsizei int) {
-	if len(rw.rbuf) != packetsizei {
-		newbuf := make([]byte, packetsizei)
-		copy(newbuf, rw.rbuf)
-		rw.rbuf = newbuf
-	}
-	if len(rw.wbuf) != packetsizei {
-		newbuf := make([]byte, packetsizei)
-		copy(newbuf, rw.wbuf)
-		rw.wbuf = newbuf
-	}
-}
-
-func (w *tdsBuffer) PackageSize() uint32 {
-	return uint32(len(w.wbuf))
-}
-
 func (w *tdsBuffer) flush() (err error) {
-	// writing packet size
-	binary.BigEndian.PutUint16(w.wbuf[2:], w.wpos)
-
-	// writing packet into underlying transport
-	if _, err = w.transport.Write(w.wbuf[:w.wpos]); err != nil {
+	binary.BigEndian.PutUint16(w.buf[2:], w.pos)
+	if _, err = w.transport.Write(w.buf[:w.pos]); err != nil {
 		return err
 	}
-
-	// execute afterFirst hook if it is set
 	if w.afterFirst != nil {
 		w.afterFirst()
 		w.afterFirst = nil
 	}
-
-	w.wpos = 8
-	// packet number
-	w.wbuf[6] += 1
+	w.pos = 8
+	w.buf[6] += 1
 	return nil
 }
 
-func (w *tdsBuffer) Write(p []byte) (total int, err error) {
-	total = 0
+func (w *tdsBuffer) Write(p []byte) (nn int, err error) {
+	total := 0
 	for {
-		copied := copy(w.wbuf[w.wpos:], p)
-		w.wpos += uint16(copied)
+		copied := copy(w.buf[w.pos:], p)
+		w.pos += uint16(copied)
 		total += copied
 		if copied == len(p) {
 			break
 		}
 		if err = w.flush(); err != nil {
-			return
+			return total, err
 		}
 		p = p[copied:]
 	}
-	return
+	return total, nil
 }
 
 func (w *tdsBuffer) WriteByte(b byte) error {
-	if int(w.wpos) == len(w.wbuf) {
+	if int(w.pos) == len(w.buf) {
 		if err := w.flush(); err != nil {
 			return err
 		}
 	}
-	w.wbuf[w.wpos] = b
-	w.wpos += 1
+	w.buf[w.pos] = b
+	w.pos += 1
 	return nil
 }
 
-func (w *tdsBuffer) BeginPacket(packet_type packetType) {
-	w.wbuf[0] = byte(packet_type)
-	w.wbuf[1] = 0 // packet is incomplete
-	w.wbuf[4] = 0 // spid
-	w.wbuf[5] = 0
-	w.wbuf[6] = 1 // packet id
-	w.wbuf[7] = 0 // window
-	w.wpos = 8
+func (w *tdsBuffer) BeginPacket(packet_type byte) {
+	w.buf[0] = packet_type
+	w.buf[1] = 0 // packet is incomplete
+	w.buf[4] = 0 // spid
+	w.buf[5] = 0
+	w.buf[6] = 1 // packet id
+	w.buf[7] = 0 // window
+	w.pos = 8
 }
 
-func (w *tdsBuffer) FinishPacket() error {
-	w.wbuf[1] = 1 // this is last packet
-	return w.flush()
+func (w *tdsBuffer) FinishPacket() (err error) {
+	w.buf[1] = 1 // packet is complete
+	binary.BigEndian.PutUint16(w.buf[2:], w.pos)
+	_, err = w.transport.Write(w.buf[:w.pos])
+	if w.afterFirst != nil {
+		w.afterFirst()
+		w.afterFirst = nil
+	}
+	return err
 }
 
 func (r *tdsBuffer) readNextPacket() error {
@@ -140,24 +105,18 @@ func (r *tdsBuffer) readNextPacket() error {
 		return err
 	}
 	offset := uint16(binary.Size(header))
-	if int(header.Size) > len(r.rbuf) {
-		return errors.New("Invalid packet size, it is longer than buffer size")
-	}
-	if int(offset) > int(header.Size) {
-		return errors.New("Invalid packet size, it is shorter than header size")
-	}
-	_, err = io.ReadFull(r.transport, r.rbuf[offset:header.Size])
+	_, err = io.ReadFull(r.transport, r.buf[offset:header.Size])
 	if err != nil {
 		return err
 	}
-	r.rpos = offset
-	r.rsize = header.Size
+	r.pos = offset
+	r.size = header.Size
 	r.final = header.Status != 0
 	r.packet_type = header.PacketType
 	return nil
 }
 
-func (r *tdsBuffer) BeginRead() (packetType, error) {
+func (r *tdsBuffer) BeginRead() (uint8, error) {
 	err := r.readNextPacket()
 	if err != nil {
 		return 0, err
@@ -166,7 +125,7 @@ func (r *tdsBuffer) BeginRead() (packetType, error) {
 }
 
 func (r *tdsBuffer) ReadByte() (res byte, err error) {
-	if r.rpos == r.rsize {
+	if r.pos == r.size {
 		if r.final {
 			return 0, io.EOF
 		}
@@ -175,8 +134,8 @@ func (r *tdsBuffer) ReadByte() (res byte, err error) {
 			return 0, err
 		}
 	}
-	res = r.rbuf[r.rpos]
-	r.rpos++
+	res = r.buf[r.pos]
+	r.pos++
 	return res, nil
 }
 
@@ -237,19 +196,17 @@ func (r *tdsBuffer) readUcs2(numchars int) string {
 	return res
 }
 
-func (r *tdsBuffer) Read(buf []byte) (copied int, err error) {
-	copied = 0
-	err = nil
-	if r.rpos == r.rsize {
+func (r *tdsBuffer) Read(buf []byte) (n int, err error) {
+	if r.pos == r.size {
 		if r.final {
 			return 0, io.EOF
 		}
 		err = r.readNextPacket()
 		if err != nil {
-			return
+			return 0, err
 		}
 	}
-	copied = copy(buf, r.rbuf[r.rpos:r.rsize])
-	r.rpos += uint16(copied)
-	return
+	copied := copy(buf, r.buf[r.pos:r.size])
+	r.pos += uint16(copied)
+	return copied, nil
 }

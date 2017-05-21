@@ -24,10 +24,7 @@ type mysqlStmt struct {
 
 func (stmt *mysqlStmt) Close() error {
 	if stmt.mc == nil || stmt.mc.netConn == nil {
-		// driver.Stmt.Close can be called more than once, thus this function
-		// has to be idempotent.
-		// See also Issue #450 and golang/go#16019.
-		//errLog.Print(ErrInvalidConn)
+		errLog.Print(ErrInvalidConn)
 		return driver.ErrBadConn
 	}
 
@@ -104,9 +101,9 @@ func (stmt *mysqlStmt) Query(args []driver.Value) (driver.Rows, error) {
 	}
 
 	rows := new(binaryRows)
+	rows.mc = mc
 
 	if resLen > 0 {
-		rows.mc = mc
 		// Columns
 		// If not cached, read them and cache them
 		if stmt.columns == nil {

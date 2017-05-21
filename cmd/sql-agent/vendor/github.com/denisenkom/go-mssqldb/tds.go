@@ -9,16 +9,13 @@ import (
 	"io"
 	"io/ioutil"
 	"net"
-	"net/url"
 	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
-	"golang.org/x/net/context" // use the "x/net/context" for backwards compatibility.
 )
 
 func parseInstances(msg []byte) map[string]map[string]string {
@@ -56,7 +53,6 @@ func getInstances(address string) (map[string]map[string]string, error) {
 		return nil, err
 	}
 	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	_, err = conn.Write([]byte{3})
 	if err != nil {
 		return nil, err
@@ -82,16 +78,11 @@ const (
 )
 
 // packet types
-// https://msdn.microsoft.com/en-us/library/dd304214.aspx
 const (
-	packSQLBatch   packetType = 1
-	packRPCRequest            = 3
-	packReply                 = 4
-
-	// 2.2.1.7 Attention: https://msdn.microsoft.com/en-us/library/dd341449.aspx
-	// 4.19.2 Out-of-Band Attention Signal: https://msdn.microsoft.com/en-us/library/dd305167.aspx
-	packAttention = 6
-
+	packSQLBatch    = 1
+	packRPCRequest  = 3
+	packReply       = 4
+	packCancel      = 6
 	packBulkLoadBCP = 7
 	packTransMgrReq = 14
 	packNormal      = 15
@@ -120,16 +111,14 @@ const (
 )
 
 type tdsSession struct {
-	buf          *tdsBuffer
-	loginAck     loginAckStruct
-	database     string
-	partner      string
-	columns      []columnStruct
-	tranid       uint64
-	logFlags     uint64
-	log          optionalLogger
-	routedServer string
-	routedPort   uint16
+	buf      *tdsBuffer
+	loginAck loginAckStruct
+	database string
+	partner  string
+	columns  []columnStruct
+	tranid   uint64
+	logFlags uint64
+	log      *Logger
 }
 
 const (
@@ -139,7 +128,6 @@ const (
 	logSQL         = 8
 	logParams      = 16
 	logTransaction = 32
-	logDebug       = 64
 )
 
 type columnStruct struct {
@@ -239,13 +227,6 @@ const (
 	fTransBoundary = 4
 	fCacheConnect  = 8
 	fIntSecurity   = 0x80
-)
-
-// TypeFlags
-const (
-	// 4 bits for fSQLType
-	// 1 bit for fOLEDB
-	fReadOnlyIntent = 32
 )
 
 type login struct {
@@ -527,18 +508,6 @@ func readBVarByte(r io.Reader) (res []byte, err error) {
 	return
 }
 
-func readUshort(r io.Reader) (res uint16, err error) {
-	err = binary.Read(r, binary.LittleEndian, &res)
-	return
-}
-
-func readByte(r io.Reader) (res byte, err error) {
-	var b [1]byte
-	_, err = r.Read(b[:])
-	res = b[0]
-	return
-}
-
 // Packet Data Stream Headers
 // http://msdn.microsoft.com/en-us/library/dd304953.aspx
 type headerStruct struct {
@@ -551,36 +520,6 @@ const (
 	dataStmHdrTransDescr    = 2 // MARS transaction descriptor (required)
 	dataStmHdrTraceActivity = 3
 )
-
-// Query Notifications Header
-// http://msdn.microsoft.com/en-us/library/dd304949.aspx
-type queryNotifHdr struct {
-	notifyId      string
-	ssbDeployment string
-	notifyTimeout uint32
-}
-
-func (hdr queryNotifHdr) pack() (res []byte) {
-	notifyId := str2ucs2(hdr.notifyId)
-	ssbDeployment := str2ucs2(hdr.ssbDeployment)
-
-	res = make([]byte, 2+len(notifyId)+2+len(ssbDeployment)+4)
-	b := res
-
-	binary.LittleEndian.PutUint16(b, uint16(len(notifyId)))
-	b = b[2:]
-	copy(b, notifyId)
-	b = b[len(notifyId):]
-
-	binary.LittleEndian.PutUint16(b, uint16(len(ssbDeployment)))
-	b = b[2:]
-	copy(b, ssbDeployment)
-	b = b[len(ssbDeployment):]
-
-	binary.LittleEndian.PutUint32(b, hdr.notifyTimeout)
-
-	return res
-}
 
 // MARS Transaction Descriptor Header
 // http://msdn.microsoft.com/en-us/library/dd340515.aspx
@@ -630,21 +569,12 @@ func sendSqlBatch72(buf *tdsBuffer,
 	headers []headerStruct) (err error) {
 	buf.BeginPacket(packSQLBatch)
 
-	if err = writeAllHeaders(buf, headers); err != nil {
-		return
-	}
+	writeAllHeaders(buf, headers)
 
 	_, err = buf.Write(str2ucs2(sqltext))
 	if err != nil {
-		return
+		return err
 	}
-	return buf.FinishPacket()
-}
-
-// 2.2.1.7 Attention: https://msdn.microsoft.com/en-us/library/dd341449.aspx
-// 4.19.2 Out-of-Band Attention Signal: https://msdn.microsoft.com/en-us/library/dd305167.aspx
-func sendAttention(buf *tdsBuffer) error {
-	buf.BeginPacket(packAttention)
 	return buf.FinishPacket()
 }
 
@@ -667,273 +597,16 @@ type connectParams struct {
 	serverSPN              string
 	workstation            string
 	appname                string
-	typeFlags              uint8
-	failOverPartner        string
-	failOverPort           uint64
 }
 
-func splitConnectionString(dsn string) (res map[string]string) {
-	res = map[string]string{}
-	parts := strings.Split(dsn, ";")
-	for _, part := range parts {
-		if len(part) == 0 {
-			continue
-		}
-		lst := strings.SplitN(part, "=", 2)
-		name := strings.TrimSpace(strings.ToLower(lst[0]))
-		if len(name) == 0 {
-			continue
-		}
-		var value string = ""
-		if len(lst) > 1 {
-			value = strings.TrimSpace(lst[1])
-		}
-		res[name] = value
-	}
-	return res
-}
-
-// Splits a URL in the ODBC format
-func splitConnectionStringOdbc(dsn string) (map[string]string, error) {
-	res := map[string]string{}
-
-	type parserState int
-	const (
-		// Before the start of a key
-		parserStateBeforeKey parserState = iota
-
-		// Inside a key
-		parserStateKey
-
-		// Beginning of a value. May be bare or braced
-		parserStateBeginValue
-
-		// Inside a bare value
-		parserStateBareValue
-
-		// Inside a braced value
-		parserStateBracedValue
-
-		// A closing brace inside a braced value.
-		// May be the end of the value or an escaped closing brace, depending on the next character
-		parserStateBracedValueClosingBrace
-
-		// After a value. Next character should be a semi-colon or whitespace.
-		parserStateEndValue
-	)
-
-	var state = parserStateBeforeKey
-
-	var key string
-	var value string
-
-	for i, c := range dsn {
-		switch state {
-		case parserStateBeforeKey:
-			switch {
-			case c == '=':
-				return res, fmt.Errorf("Unexpected character = at index %d. Expected start of key or semi-colon or whitespace.", i)
-			case !unicode.IsSpace(c) && c != ';':
-				state = parserStateKey
-				key += string(c)
-			}
-
-		case parserStateKey:
-			switch c {
-			case '=':
-				key = normalizeOdbcKey(key)
-				if len(key) == 0 {
-					return res, fmt.Errorf("Unexpected end of key at index %d.", i)
-				}
-
-				state = parserStateBeginValue
-
-			case ';':
-				// Key without value
-				key = normalizeOdbcKey(key)
-				if len(key) == 0 {
-					return res, fmt.Errorf("Unexpected end of key at index %d.", i)
-				}
-
-				res[key] = value
-				key = ""
-				value = ""
-				state = parserStateBeforeKey
-
-			default:
-				key += string(c)
-			}
-
-		case parserStateBeginValue:
-			switch {
-			case c == '{':
-				state = parserStateBracedValue
-			case c == ';':
-				// Empty value
-				res[key] = value
-				key = ""
-				state = parserStateBeforeKey
-			case unicode.IsSpace(c):
-				// Ignore whitespace
-			default:
-				state = parserStateBareValue
-				value += string(c)
-			}
-
-		case parserStateBareValue:
-			if c == ';' {
-				res[key] = strings.TrimRightFunc(value, unicode.IsSpace)
-				key = ""
-				value = ""
-				state = parserStateBeforeKey
-			} else {
-				value += string(c)
-			}
-
-		case parserStateBracedValue:
-			if c == '}' {
-				state = parserStateBracedValueClosingBrace
-			} else {
-				value += string(c)
-			}
-
-		case parserStateBracedValueClosingBrace:
-			if c == '}' {
-				// Escaped closing brace
-				value += string(c)
-				state = parserStateBracedValue
-				continue
-			}
-
-			// End of braced value
-			res[key] = value
-			key = ""
-			value = ""
-
-			// This character is the first character past the end,
-			// so it needs to be parsed like the parserStateEndValue state.
-			state = parserStateEndValue
-			switch {
-			case c == ';':
-				state = parserStateBeforeKey
-			case unicode.IsSpace(c):
-				// Ignore whitespace
-			default:
-				return res, fmt.Errorf("Unexpected character %c at index %d. Expected semi-colon or whitespace.", c, i)
-			}
-
-		case parserStateEndValue:
-			switch {
-			case c == ';':
-				state = parserStateBeforeKey
-			case unicode.IsSpace(c):
-				// Ignore whitespace
-			default:
-				return res, fmt.Errorf("Unexpected character %c at index %d. Expected semi-colon or whitespace.", c, i)
-			}
-		}
-	}
-
-	switch state {
-	case parserStateBeforeKey: // Okay
-	case parserStateKey: // Unfinished key. Treat as key without value.
-		key = normalizeOdbcKey(key)
-		if len(key) == 0 {
-			return res, fmt.Errorf("Unexpected end of key at index %d.", len(dsn))
-		}
-		res[key] = value
-	case parserStateBeginValue: // Empty value
-		res[key] = value
-	case parserStateBareValue:
-		res[key] = strings.TrimRightFunc(value, unicode.IsSpace)
-	case parserStateBracedValue:
-		return res, fmt.Errorf("Unexpected end of braced value at index %d.", len(dsn))
-	case parserStateBracedValueClosingBrace: // End of braced value
-		res[key] = value
-	case parserStateEndValue: // Okay
-	}
-
-	return res, nil
-}
-
-// Normalizes the given string as an ODBC-format key
-func normalizeOdbcKey(s string) string {
-	return strings.ToLower(strings.TrimRightFunc(s, unicode.IsSpace))
-}
-
-// Splits a URL of the form sqlserver://username:password@host/instance?param1=value&param2=value
-func splitConnectionStringURL(dsn string) (map[string]string, error) {
-	res := map[string]string{}
-
-	u, err := url.Parse(dsn)
-	if err != nil {
-		return res, err
-	}
-
-	if u.Scheme != "sqlserver" {
-		return res, fmt.Errorf("scheme %s is not recognized", u.Scheme)
-	}
-
-	if u.User != nil {
-		res["user id"] = u.User.Username()
-		p, exists := u.User.Password()
-		if exists {
-			res["password"] = p
-		}
-	}
-
-	host, port, err := net.SplitHostPort(u.Host)
-	if err != nil {
-		host = u.Host
-	}
-
-	if len(u.Path) > 0 {
-		res["server"] = host + "\\" + u.Path[1:]
-	} else {
-		res["server"] = host
-	}
-
-	if len(port) > 0 {
-		res["port"] = port
-	}
-
-	query := u.Query()
-	for k, v := range query {
-		if len(v) > 1 {
-			return res, fmt.Errorf("key %s provided more than once", k)
-		}
-		res[k] = v[0]
-	}
-
-	return res, nil
-}
-
-func parseConnectParams(dsn string) (connectParams, error) {
+func parseConnectParams(params map[string]string) (*connectParams, error) {
 	var p connectParams
-
-	var params map[string]string
-	if strings.HasPrefix(dsn, "odbc:") {
-		parameters, err := splitConnectionStringOdbc(dsn[len("odbc:"):])
-		if err != nil {
-			return p, err
-		}
-		params = parameters
-	} else if strings.HasPrefix(dsn, "sqlserver://") {
-		parameters, err := splitConnectionStringURL(dsn)
-		if err != nil {
-			return p, err
-		}
-		params = parameters
-	} else {
-		params = splitConnectionString(dsn)
-	}
-
 	strlog, ok := params["log"]
 	if ok {
 		var err error
 		p.logFlags, err = strconv.ParseUint(strlog, 10, 0)
 		if err != nil {
-			return p, fmt.Errorf("Invalid log parameter '%s': %s", strlog, err.Error())
+			return nil, fmt.Errorf("Invalid log parameter '%s': %s", strlog, err.Error())
 		}
 	}
 	server := params["server"]
@@ -948,27 +621,43 @@ func parseConnectParams(dsn string) (connectParams, error) {
 	p.database = params["database"]
 	p.user = params["user id"]
 	p.password = params["password"]
-
 	p.port = 1433
-	strport, ok := params["port"]
-	if ok {
-		var err error
+	if p.instance != "" {
+		p.instance = strings.ToUpper(p.instance)
+		instances, err := getInstances(p.host)
+		if err != nil {
+			f := "Unable to get instances from Sql Server Browser on host %v: %v"
+			return nil, fmt.Errorf(f, p.host, err.Error())
+		}
+		strport, ok := instances[p.instance]["tcp"]
+		if !ok {
+			f := "No instance matching '%v' returned from host '%v'"
+			return nil, fmt.Errorf(f, p.instance, p.host)
+		}
 		p.port, err = strconv.ParseUint(strport, 0, 16)
 		if err != nil {
-			f := "Invalid tcp port '%v': %v"
-			return p, fmt.Errorf(f, strport, err.Error())
+			f := "Invalid tcp port returned from Sql Server Browser '%v': %v"
+			return nil, fmt.Errorf(f, strport, err.Error())
+		}
+	} else {
+		strport, ok := params["port"]
+		if ok {
+			var err error
+			p.port, err = strconv.ParseUint(strport, 0, 16)
+			if err != nil {
+				f := "Invalid tcp port '%v': %v"
+				return nil, fmt.Errorf(f, strport, err.Error())
+			}
 		}
 	}
-
-	// https://msdn.microsoft.com/en-us/library/dd341108.aspx
-	p.dial_timeout = 15 * time.Second
+	p.dial_timeout = 5 * time.Second
 	p.conn_timeout = 30 * time.Second
 	strconntimeout, ok := params["connection timeout"]
 	if ok {
 		timeout, err := strconv.ParseUint(strconntimeout, 0, 16)
 		if err != nil {
 			f := "Invalid connection timeout '%v': %v"
-			return p, fmt.Errorf(f, strconntimeout, err.Error())
+			return nil, fmt.Errorf(f, strconntimeout, err.Error())
 		}
 		p.conn_timeout = time.Duration(timeout) * time.Second
 	}
@@ -977,21 +666,16 @@ func parseConnectParams(dsn string) (connectParams, error) {
 		timeout, err := strconv.ParseUint(strdialtimeout, 0, 16)
 		if err != nil {
 			f := "Invalid dial timeout '%v': %v"
-			return p, fmt.Errorf(f, strdialtimeout, err.Error())
+			return nil, fmt.Errorf(f, strdialtimeout, err.Error())
 		}
 		p.dial_timeout = time.Duration(timeout) * time.Second
 	}
-
-	// default keep alive should be 30 seconds according to spec:
-	// https://msdn.microsoft.com/en-us/library/dd341108.aspx
-	p.keepAlive = 30 * time.Second
-
 	keepAlive, ok := params["keepalive"]
 	if ok {
 		timeout, err := strconv.ParseUint(keepAlive, 0, 16)
 		if err != nil {
 			f := "Invalid keepAlive value '%s': %s"
-			return p, fmt.Errorf(f, keepAlive, err.Error())
+			return nil, fmt.Errorf(f, keepAlive, err.Error())
 		}
 		p.keepAlive = time.Duration(timeout) * time.Second
 	}
@@ -1004,7 +688,7 @@ func parseConnectParams(dsn string) (connectParams, error) {
 			p.encrypt, err = strconv.ParseBool(encrypt)
 			if err != nil {
 				f := "Invalid encrypt '%s': %s"
-				return p, fmt.Errorf(f, encrypt, err.Error())
+				return nil, fmt.Errorf(f, encrypt, err.Error())
 			}
 		}
 	} else {
@@ -1016,7 +700,7 @@ func parseConnectParams(dsn string) (connectParams, error) {
 		p.trustServerCertificate, err = strconv.ParseBool(trust)
 		if err != nil {
 			f := "Invalid trust server certificate '%s': %s"
-			return p, fmt.Errorf(f, trust, err.Error())
+			return nil, fmt.Errorf(f, trust, err.Error())
 		}
 	}
 	p.certificate = params["certificate"]
@@ -1025,14 +709,14 @@ func parseConnectParams(dsn string) (connectParams, error) {
 		p.hostInCertificate = p.host
 	}
 
-	serverSPN, ok := params["serverspn"]
+	serverSPN, ok := params["ServerSPN"]
 	if ok {
 		p.serverSPN = serverSPN
 	} else {
 		p.serverSPN = fmt.Sprintf("MSSQLSvc/%s:%d", p.host, p.port)
 	}
 
-	workstation, ok := params["workstation id"]
+	workstation, ok := params["Workstation ID"]
 	if ok {
 		p.workstation = workstation
 	} else {
@@ -1047,30 +731,7 @@ func parseConnectParams(dsn string) (connectParams, error) {
 		appname = "go-mssqldb"
 	}
 	p.appname = appname
-
-	appintent, ok := params["applicationintent"]
-	if ok {
-		if appintent == "ReadOnly" {
-			p.typeFlags |= fReadOnlyIntent
-		}
-	}
-
-	failOverPartner, ok := params["failoverpartner"]
-	if ok {
-		p.failOverPartner = failOverPartner
-	}
-
-	failOverPort, ok := params["failoverport"]
-	if ok {
-		var err error
-		p.failOverPort, err = strconv.ParseUint(failOverPort, 0, 16)
-		if err != nil {
-			f := "Invalid tcp port '%v': %v"
-			return p, fmt.Errorf(f, failOverPort, err.Error())
-		}
-	}
-
-	return p, nil
+	return &p, nil
 }
 
 type Auth interface {
@@ -1079,10 +740,15 @@ type Auth interface {
 	Free()
 }
 
-// SQL Server AlwaysOn Availability Group Listeners are bound by DNS to a
-// list of IP addresses.  So if there is more than one, try them all and
-// use the first one that allows a connection.
-func dialConnection(p connectParams) (conn net.Conn, err error) {
+func connect(params map[string]string) (res *tdsSession, err error) {
+	p, err := parseConnectParams(params)
+	if err != nil {
+		return nil, err
+	}
+
+	// SQL Server AlwaysOn Availability Group Listeners are bound by DNS to a
+	// list of IP addresses.  So if there is more than one, try them all and
+	// use the first one that allows a connection.
 	var ips []net.IP
 	ips, err = net.LookupIP(p.host)
 	if err != nil {
@@ -1090,23 +756,24 @@ func dialConnection(p connectParams) (conn net.Conn, err error) {
 		if ip == nil {
 			return nil, err
 		}
+
 		ips = []net.IP{ip}
 	}
+	var conn net.Conn
 	if len(ips) == 1 {
-		d := createDialer(&p)
+		d := createDialer(p)
 		addr := net.JoinHostPort(ips[0].String(), strconv.Itoa(int(p.port)))
-		conn, err = d.Dial(addr)
+		conn, err = d.Dial("tcp", addr)
 
 	} else {
 		//Try Dials in parallel to avoid waiting for timeouts.
 		connChan := make(chan net.Conn, len(ips))
 		errChan := make(chan error, len(ips))
-		portStr := strconv.Itoa(int(p.port))
 		for _, ip := range ips {
 			go func(ip net.IP) {
-				d := createDialer(&p)
-				addr := net.JoinHostPort(ip.String(), portStr)
-				conn, err := d.Dial(addr)
+				d := createDialer(p)
+				addr := net.JoinHostPort(ip.String(), strconv.Itoa(int(p.port)))
+				conn, err := d.Dial("tcp", addr)
 				if err == nil {
 					connChan <- conn
 				} else {
@@ -1129,48 +796,14 @@ func dialConnection(p connectParams) (conn net.Conn, err error) {
 						}
 					}
 				}(len(ips) - i - 1)
-				// Remove any earlier errors we may have collected
-				err = nil
 				break wait_loop
 			case err = <-errChan:
 			}
 		}
 	}
-	// Can't do the usual err != nil check, as it is possible to have gotten an error before a successful connection
-	if conn == nil {
+	if err != nil {
 		f := "Unable to open tcp connection with host '%v:%v': %v"
 		return nil, fmt.Errorf(f, p.host, p.port, err.Error())
-	}
-
-	return conn, err
-}
-
-func connect(log optionalLogger, p connectParams) (res *tdsSession, err error) {
-	res = nil
-	// if instance is specified use instance resolution service
-	if p.instance != "" {
-		p.instance = strings.ToUpper(p.instance)
-		instances, err := getInstances(p.host)
-		if err != nil {
-			f := "Unable to get instances from Sql Server Browser on host %v: %v"
-			return nil, fmt.Errorf(f, p.host, err.Error())
-		}
-		strport, ok := instances[p.instance]["tcp"]
-		if !ok {
-			f := "No instance matching '%v' returned from host '%v'"
-			return nil, fmt.Errorf(f, p.instance, p.host)
-		}
-		p.port, err = strconv.ParseUint(strport, 0, 16)
-		if err != nil {
-			f := "Invalid tcp port returned from Sql Server Browser '%v': %v"
-			return nil, fmt.Errorf(f, strport, err.Error())
-		}
-	}
-
-initiate_connection:
-	conn, err := dialConnection(p)
-	if err != nil {
-		return nil, err
 	}
 
 	toconn := NewTimeoutConn(conn, p.conn_timeout)
@@ -1178,7 +811,6 @@ initiate_connection:
 	outbuf := newTdsBuffer(4096, toconn)
 	sess := tdsSession{
 		buf:      outbuf,
-		log:      log,
 		logFlags: p.logFlags,
 	}
 
@@ -1254,13 +886,12 @@ initiate_connection:
 
 	login := login{
 		TDSVersion:   verTDS74,
-		PacketSize:   outbuf.PackageSize(),
+		PacketSize:   uint32(len(outbuf.buf)),
 		Database:     p.database,
 		OptionFlags2: fODBC, // to get unlimited TEXTSIZE
 		HostName:     p.workstation,
 		ServerName:   p.host,
 		AppName:      p.appname,
-		TypeFlags:    p.typeFlags,
 	}
 	auth, auth_ok := getAuth(p.user, p.password, p.serverSPN, p.workstation)
 	if auth_ok {
@@ -1283,7 +914,7 @@ initiate_connection:
 	var sspi_msg []byte
 continue_login:
 	tokchan := make(chan tokenStruct, 5)
-	go processResponse(context.Background(), &sess, tokchan)
+	go processResponse(&sess, tokchan)
 	success := false
 	for tok := range tokchan {
 		switch token := tok.(type) {
@@ -1314,12 +945,6 @@ continue_login:
 	}
 	if !success {
 		return nil, fmt.Errorf("Login failed")
-	}
-	if sess.routedServer != "" {
-		toconn.Close()
-		p.host = sess.routedServer
-		p.port = uint64(sess.routedPort)
-		goto initiate_connection
 	}
 	return &sess, nil
 }

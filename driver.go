@@ -211,6 +211,20 @@ var connectors = map[string]connector{
 
 		return conn
 	},
+
+	// Snowflake supports space-delimited key=value pairs.
+	// See https://github.com/snowflakedb/gosnowflake#dsn-data-source-name
+	"snowflake": func(params map[string]interface{}) string {
+		toks := make([]string, len(params))
+		i := 0
+
+		for k, v := range params {
+			toks[i] = fmt.Sprintf("%s=%v", k, v)
+			i++
+		}
+
+		return strings.Join(toks, " ")
+	},
 }
 
 // mapBytesToString ensures byte slices that were returned from the database
@@ -237,4 +251,5 @@ var Drivers = map[string]string{
 	"mssql":      "mssql",
 	"sqlserver":  "mssql",
 	"oracle":     "oci8",
+	"snowflake":  "snowflake",
 }

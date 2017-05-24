@@ -15,6 +15,7 @@ import (
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-oci8"
 	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/snowflakedb/gosnowflake"
 )
 
 var usage = `SQL Agent - HTTP interface

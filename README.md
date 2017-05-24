@@ -11,6 +11,7 @@ The supported databases are:
 - Oracle
 - Microsoft SQL Server
 - SQLite
+- Snowflake
 
 In addition to the service, this repo also defines a `sqlagent` package for using in other Go programs.
 

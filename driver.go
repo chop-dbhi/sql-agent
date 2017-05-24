@@ -215,15 +215,60 @@ var connectors = map[string]connector{
 	// Snowflake supports space-delimited key=value pairs.
 	// See https://github.com/snowflakedb/gosnowflake#dsn-data-source-name
 	"snowflake": func(params map[string]interface{}) string {
-		toks := make([]string, len(params))
-		i := 0
+		var (
+			user, pass, db interface{}
+
+			host interface{} = "localhost"
+			port interface{}
+
+			query []string
+		)
 
 		for k, v := range params {
-			toks[i] = fmt.Sprintf("%s=%v", k, v)
-			i++
+			switch k {
+			case "user":
+				user = v
+			case "password":
+				pass = v
+			case "host":
+				host = v
+			case "port":
+				port = v
+			case "database":
+				db = v
+			default:
+				query = append(query, fmt.Sprintf("%s=%s", k, url.QueryEscape(fmt.Sprint(v))))
+			}
 		}
 
-		return strings.Join(toks, " ")
+		var conn string
+
+		if user != nil {
+			conn += fmt.Sprintf("%s", user)
+		}
+
+		if pass != nil {
+			conn += fmt.Sprintf(":%s", pass)
+		}
+
+		if conn != "" {
+			conn += "@"
+		}
+
+		conn += fmt.Sprint(host)
+
+		// If a host is supplied a port must as well or vice versa.
+		if port != nil {
+			conn += fmt.Sprintf(":%v", port)
+		}
+
+		conn += fmt.Sprintf("/%v", db)
+
+		if len(query) > 0 {
+			conn += fmt.Sprintf("?%s", strings.Join(query, "&"))
+		}
+
+		return conn
 	},
 }
 

@@ -71,9 +71,13 @@ func Connect(driver string, params map[string]interface{}) (*sqlx.DB, error) {
 	connector := connectors[driver]
 
 	params = cleanParams(params)
-	connstr := connector(params)
 
-	return sqlx.Connect(driver, connstr)
+	dsn, ok := params["dsn"].(string)
+	if !ok {
+		dsn = connector(params)
+	}
+
+	return sqlx.Connect(driver, dsn)
 }
 
 // Execute takes a database instance, SQL statement, and parameters and executes the query

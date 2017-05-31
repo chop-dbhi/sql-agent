@@ -73,6 +73,8 @@ The core option names are standardized for ease of use.
 
 Other options that are supplied are passed query options if they are known, otherwise they are they ignored.
 
+Alternatively, the `dsn` parameter can be specified which will used directly when [opening a connection](https://golang.org/pkg/database/sql/#Open).
+
 ## Details
 
 - Only `SELECT` statements are supported.

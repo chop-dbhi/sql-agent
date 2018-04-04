@@ -1,7 +1,4 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
 package gosnowflake
 
 import (
@@ -12,46 +9,44 @@ import (
 	"net/url"
 	"testing"
 	"time"
-
-	"github.com/golang/glog"
 )
 
-func postTestError(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration) (*http.Response, error) {
+func postTestError(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration, _ bool) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       &fakeResponseBody{body: []byte{0x12, 0x34}},
 	}, errors.New("failed to run post method")
 }
 
-func postTestSuccessButInvalidJSON(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration) (*http.Response, error) {
+func postTestSuccessButInvalidJSON(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration, _ bool) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Body:       &fakeResponseBody{body: []byte{0x12, 0x34}},
 	}, nil
 }
 
-func postTestAppBadGatewayError(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration) (*http.Response, error) {
+func postTestAppBadGatewayError(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration, _ bool) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: http.StatusBadGateway,
 		Body:       &fakeResponseBody{body: []byte{0x12, 0x34}},
 	}, nil
 }
 
-func postTestAppForbiddenError(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration) (*http.Response, error) {
+func postTestAppForbiddenError(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration, _ bool) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: http.StatusForbidden,
 		Body:       &fakeResponseBody{body: []byte{0x12, 0x34}},
 	}, nil
 }
 
-func postTestAppUnexpectedError(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration) (*http.Response, error) {
+func postTestAppUnexpectedError(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration, _ bool) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: http.StatusInsufficientStorage,
 		Body:       &fakeResponseBody{body: []byte{0x12, 0x34}},
 	}, nil
 }
 
-func postTestRenew(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration) (*http.Response, error) {
+func postTestRenew(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration, _ bool) (*http.Response, error) {
 	dd := &execResponseData{}
 	er := &execResponse{
 		Data:    *dd,
@@ -71,7 +66,7 @@ func postTestRenew(_ context.Context, _ *snowflakeRestful, _ string, _ map[strin
 	}, nil
 }
 
-func postTestAfterRenew(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration) (*http.Response, error) {
+func postTestAfterRenew(_ context.Context, _ *snowflakeRestful, _ string, _ map[string]string, _ []byte, _ time.Duration, _ bool) (*http.Response, error) {
 	dd := &execResponseData{}
 	er := &execResponse{
 		Data:    *dd,
@@ -156,8 +151,7 @@ func TestUnitRenewRestfulSession(t *testing.T) {
 		Token:       "token",
 		FuncPost:    postTestAfterRenew,
 	}
-	var err error
-	err = renewRestfulSession(context.Background(), sr)
+	err := renewRestfulSession(context.Background(), sr)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -182,8 +176,7 @@ func TestUnitCloseSession(t *testing.T) {
 	sr := &snowflakeRestful{
 		FuncPost: postTestAfterRenew,
 	}
-	var err error
-	err = closeSession(sr)
+	err := closeSession(sr)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -208,8 +201,7 @@ func TestUnitCancelQuery(t *testing.T) {
 	sr := &snowflakeRestful{
 		FuncPost: postTestAfterRenew,
 	}
-	var err error
-	err = cancelQuery(sr, "abcdefg")
+	err := cancelQuery(sr, "abcdefg")
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

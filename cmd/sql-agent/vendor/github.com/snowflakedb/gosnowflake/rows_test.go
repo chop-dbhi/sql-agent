@@ -1,7 +1,5 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
@@ -13,8 +11,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/golang/glog"
 )
 
 // test variables
@@ -39,14 +35,15 @@ func TestRowsWithoutChunkDownloader(t *testing.T) {
 	rows.sc = nil
 	rows.RowType = rt
 	rows.ChunkDownloader = &snowflakeChunkDownloader{
-		sc:            nil,
-		ctx:           context.Background(),
-		CurrentChunk:  cc,
-		Total:         int64(len(cc)),
-		ChunkMetas:    cm,
-		TotalRowIndex: int64(-1),
-		Qrmk:          "",
-		FuncDownload:  nil,
+		sc:                 nil,
+		ctx:                context.Background(),
+		CurrentChunk:       cc,
+		Total:              int64(len(cc)),
+		ChunkMetas:         cm,
+		TotalRowIndex:      int64(-1),
+		Qrmk:               "",
+		FuncDownload:       nil,
+		FuncDownloadHelper: nil,
 	}
 	rows.ChunkDownloader.start()
 	// var dest []driver.Value
@@ -293,7 +290,7 @@ func TestRowsWithChunkDownloaderErrorFail(t *testing.T) {
 	}
 }
 
-func getChunkTestInvalidResponseBody(_ *snowflakeChunkDownloader, _ string, _ map[string]string, _ time.Duration) (
+func getChunkTestInvalidResponseBody(_ context.Context, _ *snowflakeChunkDownloader, _ string, _ map[string]string, _ time.Duration) (
 	*http.Response, error) {
 	return &http.Response{
 		StatusCode: http.StatusOK,
@@ -309,12 +306,13 @@ func TestDownloadChunkInvalidResponseBody(t *testing.T) {
 			"dummyURL%v", i+1), RowCount: rowsInChunk})
 	}
 	scd := &snowflakeChunkDownloader{
-		ctx:           context.Background(),
-		ChunkMetas:    cm,
-		TotalRowIndex: int64(-1),
-		Qrmk:          "HOHOHO",
-		FuncDownload:  downloadChunk,
-		FuncGet:       getChunkTestInvalidResponseBody,
+		ctx:                context.Background(),
+		ChunkMetas:         cm,
+		TotalRowIndex:      int64(-1),
+		Qrmk:               "HOHOHO",
+		FuncDownload:       downloadChunk,
+		FuncDownloadHelper: downloadChunkHelper,
+		FuncGet:            getChunkTestInvalidResponseBody,
 	}
 	scd.ChunksMutex = &sync.Mutex{}
 	scd.Chunks = make(map[int][][]*string)
@@ -330,7 +328,7 @@ func TestDownloadChunkInvalidResponseBody(t *testing.T) {
 	}
 }
 
-func getChunkTestErrorStatus(_ *snowflakeChunkDownloader, _ string, _ map[string]string, _ time.Duration) (
+func getChunkTestErrorStatus(_ context.Context, _ *snowflakeChunkDownloader, _ string, _ map[string]string, _ time.Duration) (
 	*http.Response, error) {
 	return &http.Response{
 		StatusCode: http.StatusBadGateway,
@@ -346,12 +344,13 @@ func TestDownloadChunkErrorStatus(t *testing.T) {
 			"dummyURL%v", i+1), RowCount: rowsInChunk})
 	}
 	scd := &snowflakeChunkDownloader{
-		ctx:           context.Background(),
-		ChunkMetas:    cm,
-		TotalRowIndex: int64(-1),
-		Qrmk:          "HOHOHO",
-		FuncDownload:  downloadChunk,
-		FuncGet:       getChunkTestErrorStatus,
+		ctx:                context.Background(),
+		ChunkMetas:         cm,
+		TotalRowIndex:      int64(-1),
+		Qrmk:               "HOHOHO",
+		FuncDownload:       downloadChunk,
+		FuncDownloadHelper: downloadChunkHelper,
+		FuncGet:            getChunkTestErrorStatus,
 	}
 	scd.ChunksMutex = &sync.Mutex{}
 	scd.Chunks = make(map[int][][]*string)

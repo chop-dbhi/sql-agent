@@ -1,11 +1,8 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,12 +14,18 @@ import (
 	"strings"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/satori/go.uuid"
 )
 
 const (
 	clientType = "Go"
+)
+
+const (
+	authenticatorExternalBrowser = "EXTERNALBROWSER"
+	authenticatorOAuth           = "OAUTH"
+	authenticatorSnowflake       = "SNOWFLAKE"
+	authenticatorOkta            = "OKTA"
 )
 
 // platform consists of compiler, OS and architecture type in string
@@ -36,18 +39,21 @@ type authRequestClientEnvironment struct {
 	OsVersion   string `json:"OS_VERSION"`
 }
 type authRequestData struct {
-	ClientAppID       string                       `json:"CLIENT_APP_ID"`
-	ClientAppVersion  string                       `json:"CLIENT_APP_VERSION"`
-	SvnRevision       string                       `json:"SVN_REVISION"`
-	AccoutName        string                       `json:"ACCOUNT_NAME"`
-	LoginName         string                       `json:"LOGIN_NAME,omitempty"`
-	Password          string                       `json:"PASSWORD,omitempty"`
-	RawSAMLResponse   string                       `json:"RAW_SAML_RESPONSE,omitempty"`
-	ExtAuthnDuoMethod string                       `json:"EXT_AUTHN_DUO_METHOD,omitempty"`
-	Passcode          string                       `json:"PASSCODE,omitempty"`
-	Authenticator     string                       `json:"AUTHENTICATOR,omitempty"`
-	SessionParameters map[string]string            `json:"SESSION_PARAMETERS,omitempty"`
-	ClientEnvironment authRequestClientEnvironment `json:"CLIENT_ENVIRONMENT"`
+	ClientAppID             string                       `json:"CLIENT_APP_ID"`
+	ClientAppVersion        string                       `json:"CLIENT_APP_VERSION"`
+	SvnRevision             string                       `json:"SVN_REVISION"`
+	AccountName             string                       `json:"ACCOUNT_NAME"`
+	LoginName               string                       `json:"LOGIN_NAME,omitempty"`
+	Password                string                       `json:"PASSWORD,omitempty"`
+	RawSAMLResponse         string                       `json:"RAW_SAML_RESPONSE,omitempty"`
+	ExtAuthnDuoMethod       string                       `json:"EXT_AUTHN_DUO_METHOD,omitempty"`
+	Passcode                string                       `json:"PASSCODE,omitempty"`
+	Authenticator           string                       `json:"AUTHENTICATOR,omitempty"`
+	SessionParameters       map[string]string            `json:"SESSION_PARAMETERS,omitempty"`
+	ClientEnvironment       authRequestClientEnvironment `json:"CLIENT_ENVIRONMENT"`
+	BrowserModeRedirectPort string                       `json:"BROWSER_MODE_REDIRECT_PORT,omitempty"`
+	ProofKey                string                       `json:"PROOF_KEY,omitempty"`
+	Token                   string                       `json:"TOKEN,omitempty"`
 }
 type authRequest struct {
 	Data authRequestData `json:"data"`
@@ -82,6 +88,7 @@ type authResponseMain struct {
 	SessionInfo             authResponseSessionInfo `json:"sessionInfo"`
 	TokenURL                string                  `json:"tokenUrl,omitempty"`
 	SSOURL                  string                  `json:"ssoUrl,omitempty"`
+	ProofKey                string                  `json:"proofKey,omitempty"`
 }
 type authResponse struct {
 	Data    authResponseMain `json:"data"`
@@ -97,19 +104,17 @@ func postAuth(
 	body []byte,
 	timeout time.Duration) (
 	data *authResponse, err error) {
-	requestID := fmt.Sprintf("requestId=%v", uuid.NewV4().String())
-	params.Add("requestId", requestID)
+	params.Add("requestId", uuid.NewV4().String())
 	fullURL := fmt.Sprintf(
 		"%s://%s:%d%s", sr.Protocol, sr.Host, sr.Port,
 		"/session/v1/login-request?"+params.Encode())
 	glog.V(2).Infof("full URL: %v", fullURL)
-	resp, err := sr.FuncPost(context.TODO(), sr, fullURL, headers, body, timeout)
+	resp, err := sr.FuncPost(context.TODO(), sr, fullURL, headers, body, timeout, true)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusOK {
-		glog.V(3).Infof("postAuth: resp: %v", resp)
 		var respd authResponse
 		err = json.NewDecoder(resp.Body).Decode(&respd)
 		if err != nil {
@@ -123,7 +128,7 @@ func postAuth(
 	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		// service availability or connectivity issue. Most likely server side issue.
 		return nil, &SnowflakeError{
-			Number:      ErrServiceUnavailable,
+			Number:      ErrCodeServiceUnavailable,
 			SQLState:    SQLStateConnectionWasNotEstablished,
 			Message:     errMsgServiceUnavailable,
 			MessageArgs: []interface{}{resp.StatusCode, fullURL},
@@ -131,7 +136,7 @@ func postAuth(
 	case http.StatusUnauthorized, http.StatusForbidden:
 		// failed to connect to db. account name may be wrong
 		return nil, &SnowflakeError{
-			Number:      ErrFailedToConnect,
+			Number:      ErrCodeFailedToConnect,
 			SQLState:    SQLStateConnectionRejected,
 			Message:     errMsgFailedToConnect,
 			MessageArgs: []interface{}{resp.StatusCode, fullURL},
@@ -154,36 +159,31 @@ func postAuth(
 	}
 }
 
-// authenticate is used to authenticate user to gain accesss to Snowflake database.
-func authenticate(
-	sr *snowflakeRestful,
-	user string,
-	password string,
-	account string,
-	database string,
-	schema string,
-	warehouse string,
-	role string,
-	passcode string,
-	passcodeInPassword bool,
-	application string,
-	sessionParams map[string]*string,
-	samlResponse []byte,
-	mfaCallback string,
-	passwordCallback string) (resp *authResponseMain, err error) {
-	glog.V(2).Info("authenticate")
+// Generates a map of headers needed to authenticate
+// with Snowflake.
+func getHeaders() map[string]string {
 	headers := make(map[string]string)
 	headers["Content-Type"] = headerContentTypeApplicationJSON
 	headers["accept"] = headerAcceptTypeApplicationSnowflake
 	headers["User-Agent"] = userAgent
+	return headers
+}
 
+// Used to authenticate the user with Snowflake.
+func authenticate(
+	sc *snowflakeConn,
+	samlResponse []byte,
+	proofKey []byte,
+) (resp *authResponseMain, err error) {
+
+	headers := getHeaders()
 	clientEnvironment := authRequestClientEnvironment{
-		Application: application,
+		Application: sc.cfg.Application,
 		OsVersion:   platform,
 	}
 
 	sessionParameters := make(map[string]string)
-	for k, v := range sessionParams {
+	for k, v := range sc.cfg.Params {
 		// upper casing to normalize keys
 		sessionParameters[strings.ToUpper(k)] = *v
 	}
@@ -191,20 +191,35 @@ func authenticate(
 	requestMain := authRequestData{
 		ClientAppID:       clientType,
 		ClientAppVersion:  SnowflakeGoDriverVersion,
-		AccoutName:        account,
+		AccountName:       sc.cfg.Account,
 		SessionParameters: sessionParameters,
 		ClientEnvironment: clientEnvironment,
 	}
-	if bytes.Compare(samlResponse, []byte{}) != 0 {
+
+	authenticator := strings.ToUpper(sc.cfg.Authenticator)
+	switch authenticator {
+	case authenticatorExternalBrowser:
+		requestMain.ProofKey = string(proofKey)
+		requestMain.Token = string(samlResponse)
+		requestMain.LoginName = sc.cfg.User
+		requestMain.Authenticator = authenticatorExternalBrowser
+	case authenticatorOAuth:
+		requestMain.LoginName = sc.cfg.User
+		requestMain.Authenticator = authenticatorOAuth
+		requestMain.Token = sc.cfg.Token
+	case authenticatorOkta:
 		requestMain.RawSAMLResponse = string(samlResponse)
-	} else {
-		requestMain.LoginName = user
-		requestMain.Password = password
+	case authenticatorSnowflake:
+		fallthrough
+	default:
+		glog.V(2).Info("Username and password")
+		requestMain.LoginName = sc.cfg.User
+		requestMain.Password = sc.cfg.Password
 		switch {
-		case passcodeInPassword:
+		case sc.cfg.PasscodeInPassword:
 			requestMain.ExtAuthnDuoMethod = "passcode"
-		case passcode != "":
-			requestMain.Passcode = passcode
+		case sc.cfg.Passcode != "":
+			requestMain.Passcode = sc.cfg.Passcode
 			requestMain.ExtAuthnDuoMethod = "passcode"
 		}
 	}
@@ -213,17 +228,17 @@ func authenticate(
 		Data: requestMain,
 	}
 	params := &url.Values{}
-	if database != "" {
-		params.Add("databaseName", database)
+	if sc.cfg.Database != "" {
+		params.Add("databaseName", sc.cfg.Database)
 	}
-	if schema != "" {
-		params.Add("schemaName", schema)
+	if sc.cfg.Schema != "" {
+		params.Add("schemaName", sc.cfg.Schema)
 	}
-	if warehouse != "" {
-		params.Add("warehouse", warehouse)
+	if sc.cfg.Warehouse != "" {
+		params.Add("warehouse", sc.cfg.Warehouse)
 	}
-	if role != "" {
-		params.Add("roleName", role)
+	if sc.cfg.Role != "" {
+		params.Add("roleName", sc.cfg.Role)
 	}
 
 	jsonBody, err := json.Marshal(authRequest)
@@ -231,17 +246,19 @@ func authenticate(
 		return
 	}
 
-	glog.V(2).Infof("PARAMS for Auth: %v, %v", params, sr)
-	respd, err := sr.FuncPostAuth(sr, params, headers, jsonBody, sr.LoginTimeout)
+	glog.V(2).Infof("PARAMS for Auth: %v, %v, %v, %v, %v, %v",
+		params, sc.rest.Protocol, sc.rest.Host, sc.rest.Port, sc.rest.LoginTimeout, sc.rest.Authenticator)
+
+	respd, err := sc.rest.FuncPostAuth(sc.rest, params, headers, jsonBody, sc.rest.LoginTimeout)
 	if err != nil {
 		return nil, err
 	}
 	if !respd.Success {
 		glog.V(1).Infoln("Authentication FAILED")
 		glog.Flush()
-		sr.Token = ""
-		sr.MasterToken = ""
-		sr.SessionID = -1
+		sc.rest.Token = ""
+		sc.rest.MasterToken = ""
+		sc.rest.SessionID = -1
 		code, err := strconv.Atoi(respd.Code)
 		if err != nil {
 			code = -1
@@ -254,8 +271,8 @@ func authenticate(
 		}
 	}
 	glog.V(2).Info("Authentication SUCCESS")
-	sr.Token = respd.Data.Token
-	sr.MasterToken = respd.Data.MasterToken
-	sr.SessionID = respd.Data.SessionID
+	sc.rest.Token = respd.Data.Token
+	sc.rest.MasterToken = respd.Data.MasterToken
+	sc.rest.SessionID = respd.Data.SessionID
 	return &respd.Data, nil
 }

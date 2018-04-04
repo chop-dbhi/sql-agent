@@ -1,7 +1,5 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
@@ -15,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/golang/glog"
 )
 
 const (
@@ -62,9 +58,11 @@ type snowflakeChunkDownloader struct {
 	ChunksErrorCounter int
 	ChunksFinalErrors  []*chunkError
 	Qrmk               string
+	ChunkHeader        map[string]string
 	CurrentIndex       int
 	FuncDownload       func(*snowflakeChunkDownloader, int)
-	FuncGet            func(*snowflakeChunkDownloader, string, map[string]string, time.Duration) (*http.Response, error)
+	FuncDownloadHelper func(context.Context, *snowflakeChunkDownloader, int)
+	FuncGet            func(context.Context, *snowflakeChunkDownloader, string, map[string]string, time.Duration) (*http.Response, error)
 }
 
 // ColumnTypeDatabaseTypeName returns the database column name.
@@ -119,6 +117,9 @@ func (rows *snowflakeRows) Next(dest []driver.Value) (err error) {
 	row, err := rows.ChunkDownloader.Next()
 	if err != nil {
 		// includes io.EOF
+		if err == io.EOF {
+			rows.ChunkDownloader.Chunks = nil // detach all chunks. No way to go backward without reinitialize it.
+		}
 		return err
 	}
 	for i, n := 0, len(row); i < n; i++ {
@@ -164,17 +165,18 @@ func (scd *snowflakeChunkDownloader) start() error {
 	scd.CurrentChunkIndex = -1                   // initial chunk
 
 	// start downloading chunks if exists
-	if len(scd.ChunkMetas) > 0 {
-		glog.V(2).Infof("chunks: %v", len(scd.ChunkMetas))
+	chunkMetaLen := len(scd.ChunkMetas)
+	if chunkMetaLen > 0 {
+		glog.V(2).Infof("chunks: %v", chunkMetaLen)
 		scd.ChunksMutex = &sync.Mutex{}
 		scd.Chunks = make(map[int][][]*string)
-		scd.ChunksChan = make(chan int, len(scd.ChunkMetas))
+		scd.ChunksChan = make(chan int, chunkMetaLen)
 		scd.ChunksError = make(chan *chunkError, maxChunkDownloadWorkers)
-		for i := 0; i < len(scd.ChunkMetas); i++ {
+		for i := 0; i < chunkMetaLen; i++ {
 			glog.V(2).Infof("add chunk to channel ChunksChan: %v", i+1)
 			scd.ChunksChan <- i
 		}
-		for i := 0; i < intMin(maxChunkDownloadWorkers, len(scd.ChunkMetas)); i++ {
+		for i := 0; i < intMin(maxChunkDownloadWorkers, chunkMetaLen); i++ {
 			scd.schedule()
 		}
 	}
@@ -195,7 +197,7 @@ func (scd *snowflakeChunkDownloader) schedule() {
 func (scd *snowflakeChunkDownloader) checkErrorRetry() (err error) {
 	select {
 	case errc := <-scd.ChunksError:
-		if scd.ChunksErrorCounter < maxChunkDownloaderErrorCounter {
+		if scd.ChunksErrorCounter < maxChunkDownloaderErrorCounter && errc.Error != context.Canceled {
 			// add the index to the chunks channel so that the download will be retried.
 			go scd.FuncDownload(scd, errc.Index)
 			scd.ChunksErrorCounter++
@@ -222,12 +224,20 @@ func (scd *snowflakeChunkDownloader) Next() ([]*string, error) {
 		if scd.CurrentChunkIndex >= len(scd.ChunkMetas) {
 			break
 		}
-		ticker := time.Tick(time.Second)
-		for range ticker {
+
+		scd.ChunksMutex.Lock()
+		if scd.CurrentChunkIndex > 1 {
+			scd.Chunks[scd.CurrentChunkIndex-1] = nil // detach the previously used chunk
+		}
+		scd.ChunksMutex.Unlock()
+
+		ticker := time.NewTicker(time.Second)
+		for range ticker.C {
 			scd.ChunksMutex.Lock()
 			err := scd.checkErrorRetry()
 			if err != nil {
 				scd.ChunksMutex.Unlock()
+				ticker.Stop()
 				return nil, err
 			}
 			glog.V(2).Infof("waiting for chunk idx: %v/%v",
@@ -235,6 +245,7 @@ func (scd *snowflakeChunkDownloader) Next() ([]*string, error) {
 			scd.CurrentChunk = scd.Chunks[scd.CurrentChunkIndex]
 			scd.ChunksMutex.Unlock()
 			if scd.CurrentChunk != nil {
+				ticker.Stop()
 				// kick off the next download
 				glog.V(2).Infof("ready: chunk %v", scd.CurrentChunkIndex)
 				scd.CurrentChunkSize = len(scd.CurrentChunk)
@@ -243,6 +254,7 @@ func (scd *snowflakeChunkDownloader) Next() ([]*string, error) {
 			}
 		}
 	}
+
 	glog.V(2).Infof("no more data")
 	if len(scd.ChunkMetas) > 0 {
 		close(scd.ChunksError)
@@ -252,20 +264,81 @@ func (scd *snowflakeChunkDownloader) Next() ([]*string, error) {
 }
 
 func getChunk(
+	ctx context.Context,
 	scd *snowflakeChunkDownloader,
 	fullURL string,
 	headers map[string]string,
 	timeout time.Duration) (
 	*http.Response, error) {
-	return retryHTTP(scd.ctx, scd.sc.rest.Client, http.NewRequest, "GET", fullURL, headers, nil, timeout)
+	return retryHTTP(
+		ctx, scd.sc.rest.Client, http.NewRequest,
+		"GET", fullURL, headers, nil, timeout, false)
+}
+
+/* largeResultSetReader is a reader that wraps the large result set with leading and tailing brackets. */
+type largeResultSetReader struct {
+	status int
+	body   io.Reader
+}
+
+func (r *largeResultSetReader) Read(p []byte) (n int, err error) {
+	if r.status == 0 {
+		p[0] = 0x5b // initial 0x5b ([)
+		r.status = 1
+		return 1, nil
+	}
+	if r.status == 1 {
+		var len int
+		len, err = r.body.Read(p)
+		if err == io.EOF {
+			r.status = 2
+			return len, nil
+		}
+		if err != nil {
+			return 0, err
+		}
+		return len, nil
+	}
+	if r.status == 2 {
+		p[0] = 0x5d // tail 0x5d (])
+		r.status = 3
+		return 1, nil
+	}
+	// ensure no data and EOF
+	return 0, io.EOF
 }
 
 func downloadChunk(scd *snowflakeChunkDownloader, idx int) {
 	glog.V(2).Infof("download start chunk: %v", idx+1)
+
+	execDownloadChan := make(chan struct{})
+
+	go func() {
+		scd.FuncDownloadHelper(scd.ctx, scd, idx)
+		close(execDownloadChan)
+	}()
+
+	select {
+	case <-scd.ctx.Done():
+		scd.ChunksError <- &chunkError{Index: idx, Error: scd.ctx.Err()}
+	case <-execDownloadChan:
+	}
+}
+
+func downloadChunkHelper(ctx context.Context, scd *snowflakeChunkDownloader, idx int) {
+
 	headers := make(map[string]string)
-	headers[headerSseCAlgorithm] = headerSseCAes
-	headers[headerSseCKey] = scd.Qrmk
-	resp, err := scd.FuncGet(scd, scd.ChunkMetas[idx].URL, headers, 0)
+	if len(scd.ChunkHeader) > 0 {
+		glog.V(2).Info("chunk header is provided.")
+		for k, v := range scd.ChunkHeader {
+			headers[k] = v
+		}
+	} else {
+		headers[headerSseCAlgorithm] = headerSseCAes
+		headers[headerSseCKey] = scd.Qrmk
+	}
+
+	resp, err := scd.FuncGet(ctx, scd, scd.ChunkMetas[idx].URL, headers, 0)
 	if err != nil {
 		scd.ChunksError <- &chunkError{Index: idx, Error: err}
 		return
@@ -274,17 +347,21 @@ func downloadChunk(scd *snowflakeChunkDownloader, idx int) {
 	glog.V(2).Infof("download finish chunk: %v, resp: %v", idx+1, resp)
 	if resp.StatusCode == http.StatusOK {
 		var respd [][]*string
-		b, err := ioutil.ReadAll(resp.Body)
-		r := []byte{0x5b} // opening bracket
-		r = append(r, b...)
-		r = append(r, 0x5d) // closing bracket
-		err = json.Unmarshal(r, &respd)
-		if err != nil {
-			glog.V(1).Infof(
-				"failed to decode JSON from HTTP response. URL: %v, err: %v", scd.ChunkMetas[idx].URL, err)
-			glog.Flush()
-			scd.ChunksError <- &chunkError{Index: idx, Error: err}
-			return
+		st := &largeResultSetReader{
+			status: 0,
+			body:   resp.Body,
+		}
+		dec := json.NewDecoder(st)
+		for {
+			if err := dec.Decode(&respd); err == io.EOF {
+				break
+			} else if err != nil {
+				glog.V(1).Infof(
+					"failed to extract HTTP response body. URL: %v, err: %v", scd.ChunkMetas[idx].URL, err)
+				glog.Flush()
+				scd.ChunksError <- &chunkError{Index: idx, Error: err}
+				return
+			}
 		}
 		scd.ChunksMutex.Lock()
 		scd.Chunks[idx] = respd

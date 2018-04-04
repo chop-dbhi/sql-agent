@@ -1,16 +1,12 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
 	"database/sql"
 	"database/sql/driver"
 	"net/http"
-	"time"
-
-	"github.com/golang/glog"
+	"strings"
 )
 
 // SnowflakeDriver is a context of Go Driver
@@ -28,18 +24,13 @@ func (d SnowflakeDriver) Open(dsn string) (driver.Conn, error) {
 		sc.cleanup()
 		return nil, err
 	}
-	st := snowflakeTransport
+	st := SnowflakeTransport
 	if sc.cfg.InsecureMode {
 		// no revocation check with OCSP. Think twice when you want to enable this option.
 		st = snowflakeInsecureTransport
 	}
-	proxyURL, err := proxyURL(proxyHost, proxyPort, proxyUser, proxyPassword)
 	if err != nil {
 		return nil, err
-	}
-	if proxyURL != nil {
-		st.Proxy = http.ProxyURL(proxyURL)
-		glog.V(2).Infof("proxy: %v", proxyURL)
 	}
 	// authenticate
 	sc.rest = &snowflakeRestful{
@@ -47,7 +38,7 @@ func (d SnowflakeDriver) Open(dsn string) (driver.Conn, error) {
 		Port:     sc.cfg.Port,
 		Protocol: sc.cfg.Protocol,
 		Client: &http.Client{
-			Timeout:   60 * time.Second, // each request timeout
+			Timeout:   defaultLoginTimeout, // each request timeout
 			Transport: st,
 		},
 		Authenticator:       sc.cfg.Authenticator,
@@ -67,41 +58,80 @@ func (d SnowflakeDriver) Open(dsn string) (driver.Conn, error) {
 	}
 	var authData *authResponseMain
 	var samlResponse []byte
-	if sc.cfg.Authenticator != "snowflake" {
-		samlResponse, err = authenticateBySAML(sc.rest, sc.cfg.Authenticator, sc.cfg.Application, sc.cfg.Account, sc.cfg.User, sc.cfg.Password)
+	var proofKey []byte
+
+	authenticator := strings.ToUpper(sc.cfg.Authenticator)
+	glog.V(2).Infof("Authenticating via %v", authenticator)
+	switch authenticator {
+	case authenticatorExternalBrowser:
+		samlResponse, proofKey, err = authenticateByExternalBrowser(
+			sc.rest,
+			sc.cfg.Authenticator,
+			sc.cfg.Application,
+			sc.cfg.Account,
+			sc.cfg.User,
+			sc.cfg.Password)
+		if err != nil {
+			sc.cleanup()
+			return nil, err
+		}
+	case authenticatorOAuth:
+	case authenticatorSnowflake:
+		// Nothing to do, parameters needed for auth should be already set in sc.cfg
+		break
+	default:
+		// this is actually okta, which is something misleading
+		samlResponse, err = authenticateBySAML(
+			sc.rest,
+			sc.cfg.Authenticator,
+			sc.cfg.Application,
+			sc.cfg.Account,
+			sc.cfg.User,
+			sc.cfg.Password)
 		if err != nil {
 			sc.cleanup()
 			return nil, err
 		}
 	}
 	authData, err = authenticate(
-		sc.rest,
-		sc.cfg.User,
-		sc.cfg.Password,
-		sc.cfg.Account,
-		sc.cfg.Database,
-		sc.cfg.Schema,
-		sc.cfg.Warehouse,
-		sc.cfg.Role,
-		sc.cfg.Passcode,
-		sc.cfg.PasscodeInPassword,
-		sc.cfg.Application,
-		sc.cfg.Params,
+		sc,
 		samlResponse,
-		"",
-		"",
-	)
+		proofKey)
 	if err != nil {
 		sc.cleanup()
 		return nil, err
 	}
-	glog.V(2).Infof("Auth Data: %v", authData)
-	sc.cfg.Database = authData.SessionInfo.DatabaseName
-	sc.cfg.Schema = authData.SessionInfo.SchemaName
-	sc.cfg.Role = authData.SessionInfo.RoleName
-	sc.cfg.Warehouse = authData.SessionInfo.WarehouseName
+	err = d.validateDefaultParameters(authData.SessionInfo.DatabaseName, &sc.cfg.Database)
+	if err != nil {
+		return nil, err
+	}
+	err = d.validateDefaultParameters(authData.SessionInfo.SchemaName, &sc.cfg.Schema)
+	if err != nil {
+		return nil, err
+	}
+	err = d.validateDefaultParameters(authData.SessionInfo.WarehouseName, &sc.cfg.Warehouse)
+	if err != nil {
+		return nil, err
+	}
+	err = d.validateDefaultParameters(authData.SessionInfo.RoleName, &sc.cfg.Role)
+	if err != nil {
+		return nil, err
+	}
 	sc.populateSessionParameters(authData.Parameters)
 	return sc, nil
+}
+
+func (d SnowflakeDriver) validateDefaultParameters(sessionValue string, defaultValue *string) error {
+	if *defaultValue != "" && strings.ToLower(*defaultValue) != strings.ToLower(sessionValue) {
+		return &SnowflakeError{
+			Number:      ErrCodeObjectNotExists,
+			SQLState:    SQLStateConnectionFailure,
+			Message:     errMsgObjectNotExists,
+			MessageArgs: []interface{}{*defaultValue},
+		}
+	}
+	*defaultValue = sessionValue
+	return nil
 }
 
 func init() {

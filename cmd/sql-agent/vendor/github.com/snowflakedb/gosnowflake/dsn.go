@@ -1,7 +1,5 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
@@ -10,14 +8,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/golang/glog"
 )
 
 const (
 	defaultLoginTimeout   = 60 * time.Second
 	defaultRequestTimeout = 0 * time.Second
 	defaultAuthenticator  = "snowflake"
+	defaultDomain         = ".snowflakecomputing.com"
 )
 
 // Config is a set of configuration parameters
@@ -36,7 +33,7 @@ type Config struct {
 	Host     string // hostname (optional)
 	Port     int    // port (optional)
 
-	Authenticator      string // snowflake or okta
+	Authenticator      string // snowflake, okta URL, oauth or externalbrowser
 	Passcode           string
 	PasscodeInPassword bool
 
@@ -45,15 +42,19 @@ type Config struct {
 
 	Application  string // application name.
 	InsecureMode bool   // driver doesn't check certificate revocation status
+
+	Token string // Token to use for OAuth / JWT / other forms of token based auth
 }
 
-// DSN construct a DSN for Snowflake db.
+// DSN constructs a DSN for Snowflake db.
 func DSN(cfg *Config) (dsn string, err error) {
+	hasHost := true
 	if cfg.Host == "" {
+		hasHost = false
 		if cfg.Region == "" {
-			cfg.Host = cfg.Account + ".snowflakecomputing.com"
+			cfg.Host = cfg.Account + defaultDomain
 		} else {
-			cfg.Host = cfg.Account + "." + cfg.Region + ".snowflakecomputing.com"
+			cfg.Host = cfg.Account + "." + cfg.Region + defaultDomain
 		}
 	}
 	// in case account includes region
@@ -68,6 +69,10 @@ func DSN(cfg *Config) (dsn string, err error) {
 		return "", err
 	}
 	params := &url.Values{}
+	if hasHost && cfg.Account != "" {
+		// account may not be included in a Host string
+		params.Add("account", cfg.Account)
+	}
 	if cfg.Database != "" {
 		params.Add("database", cfg.Database)
 	}
@@ -84,7 +89,7 @@ func DSN(cfg *Config) (dsn string, err error) {
 		params.Add("region", cfg.Region)
 	}
 	if cfg.Authenticator != defaultAuthenticator {
-		params.Add("authenticator", cfg.Authenticator)
+		params.Add("authenticator", strings.ToLower(cfg.Authenticator))
 	}
 	if cfg.Passcode != "" {
 		params.Add("passcode", cfg.Passcode)
@@ -101,14 +106,25 @@ func DSN(cfg *Config) (dsn string, err error) {
 	if cfg.Application != clientType {
 		params.Add("application", cfg.Application)
 	}
-	dsn = fmt.Sprintf("%v:%v@%v:%v", cfg.User, cfg.Password, cfg.Host, cfg.Port)
+	if cfg.Protocol != "" && cfg.Protocol != "https" {
+		params.Add("protocol", cfg.Protocol)
+	}
+	if cfg.Token != "" {
+		params.Add("token", cfg.Token)
+	}
+	if cfg.Params != nil {
+		for k, v := range cfg.Params {
+			params.Add(k, *v)
+		}
+	}
+	dsn = fmt.Sprintf("%v:%v@%v:%v", url.QueryEscape(cfg.User), url.QueryEscape(cfg.Password), cfg.Host, cfg.Port)
 	if params.Encode() != "" {
 		dsn += "?" + params.Encode()
 	}
 	return
 }
 
-// ParseDSN parses the DSN string to a Config
+// ParseDSN parses the DSN string to a Config.
 func ParseDSN(dsn string) (cfg *Config, err error) {
 	// New config with some default values
 	cfg = &Config{
@@ -151,9 +167,9 @@ func ParseDSN(dsn string) (cfg *Config, err error) {
 				}
 
 				// account or host:port
-				cfg.Region, cfg.Account, cfg.Host, cfg.Port, err = parseAccountHostPort(j, posSecondSlash, dsn)
+				err = parseAccountHostPort(cfg, j, posSecondSlash, dsn)
 				if err != nil {
-					return
+					return nil, err
 				}
 			}
 			// [?param1=value1&...&paramN=valueN]
@@ -167,7 +183,6 @@ func ParseDSN(dsn string) (cfg *Config, err error) {
 				cfg.Schema = dsn[i+1 : posQuestion]
 			} else {
 				cfg.Database = dsn[posSecondSlash+1 : posQuestion]
-				cfg.Schema = "public"
 			}
 			done = true
 		case dsn[i] == '?':
@@ -191,7 +206,7 @@ func ParseDSN(dsn string) (cfg *Config, err error) {
 				break
 			}
 		}
-		cfg.Region, cfg.Account, cfg.Host, cfg.Port, err = parseAccountHostPort(j, posQuestion, dsn)
+		err = parseAccountHostPort(cfg, j, posQuestion, dsn)
 		if err != nil {
 			return nil, err
 		}
@@ -200,8 +215,7 @@ func ParseDSN(dsn string) (cfg *Config, err error) {
 			return
 		}
 	}
-
-	if cfg.Account == "" && strings.HasSuffix(cfg.Host, ".snowflakecomputing.com") {
+	if cfg.Account == "" && strings.HasSuffix(cfg.Host, defaultDomain) {
 		posDot := strings.Index(cfg.Host, ".")
 		if posDot > 0 {
 			cfg.Account = cfg.Host[:posDot]
@@ -215,6 +229,16 @@ func ParseDSN(dsn string) (cfg *Config, err error) {
 
 	// unescape parameters
 	var s string
+	s, err = url.QueryUnescape(cfg.User)
+	if err != nil {
+		return nil, err
+	}
+	cfg.User = s
+	s, err = url.QueryUnescape(cfg.Password)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Password = s
 	s, err = url.QueryUnescape(cfg.Database)
 	if err != nil {
 		return nil, err
@@ -235,34 +259,39 @@ func ParseDSN(dsn string) (cfg *Config, err error) {
 		return nil, err
 	}
 	cfg.Warehouse = s
-	glog.V(2).Infof("ParseDSN: %v\n", cfg) // TODO: hide password
 	return cfg, nil
 }
 
 func fillMissingConfigParameters(cfg *Config) error {
-	if cfg.Account == "" {
+	if strings.Trim(cfg.Authenticator, " ") == "" {
+		cfg.Authenticator = defaultAuthenticator
+	}
+	if strings.Trim(cfg.Account, " ") == "" {
 		return ErrEmptyAccount
 	}
-	if cfg.User == "" {
+	if strings.Trim(cfg.User, " ") == "" {
 		return ErrEmptyUsername
 	}
-	if cfg.Password == "" {
+	authenticator := strings.ToUpper(cfg.Authenticator)
+	if authenticator != authenticatorExternalBrowser && authenticator != authenticatorOAuth && strings.Trim(cfg.Password, " ") == "" {
+		// no password parameter is required for EXTERNALBROWSER and OAUTH.
 		return ErrEmptyPassword
 	}
-	if cfg.Protocol == "" {
+	if strings.Trim(cfg.Protocol, " ") == "" {
 		cfg.Protocol = "https"
 	}
 	if cfg.Port == 0 {
 		cfg.Port = 443
 	}
 
+	cfg.Region = strings.Trim(cfg.Region, " ")
 	if cfg.Region != "" {
 		// region is specified but not included in Host
-		i := strings.Index(cfg.Host, ".snowflakecomputing.com")
+		i := strings.Index(cfg.Host, defaultDomain)
 		if i >= 1 {
 			hostPrefix := cfg.Host[0:i]
 			if !strings.HasSuffix(hostPrefix, cfg.Region) {
-				cfg.Host = hostPrefix + "." + cfg.Region + ".snowflakecomputing.com"
+				cfg.Host = hostPrefix + "." + cfg.Region + defaultDomain
 			}
 		}
 	}
@@ -272,22 +301,42 @@ func fillMissingConfigParameters(cfg *Config) error {
 	if cfg.RequestTimeout == 0 {
 		cfg.RequestTimeout = defaultRequestTimeout
 	}
-	if cfg.Application == "" {
+	if strings.Trim(cfg.Application, " ") == "" {
 		cfg.Application = clientType
 	}
-	if cfg.Authenticator == "" {
-		cfg.Authenticator = defaultAuthenticator
+	if strings.HasSuffix(cfg.Host, defaultDomain) && len(cfg.Host) == len(defaultDomain) {
+		return &SnowflakeError{
+			Number:      ErrCodeFailedToParseHost,
+			Message:     errMsgFailedToParseHost,
+			MessageArgs: []interface{}{cfg.Host},
+		}
+	}
+	return nil
+}
+
+// transformAccountToHost transforms host to accout name
+func transformAccountToHost(cfg *Config) (err error) {
+	if cfg.Port == 0 && !strings.HasSuffix(cfg.Host, defaultDomain) && cfg.Host != "" {
+		// account name is specified instead of host:port
+		cfg.Account = cfg.Host
+		cfg.Host = cfg.Account + defaultDomain
+		cfg.Port = 443
+		posDot := strings.Index(cfg.Account, ".")
+		if posDot > 0 {
+			cfg.Region = cfg.Account[posDot+1:]
+			cfg.Account = cfg.Account[:posDot]
+		}
 	}
 	return nil
 }
 
 // parseAccountHostPort parses the DSN string to attempt to get account or host and port.
-func parseAccountHostPort(posAt, posSlash int, dsn string) (region, account, host string, port int, err error) {
+func parseAccountHostPort(cfg *Config, posAt, posSlash int, dsn string) (err error) {
 	// account or host:port
 	var k int
 	for k = posAt + 1; k < posSlash; k++ {
 		if dsn[k] == ':' {
-			port, err = strconv.Atoi(dsn[k+1 : posSlash])
+			cfg.Port, err = strconv.Atoi(dsn[k+1 : posSlash])
 			if err != nil {
 				err = &SnowflakeError{
 					Number:      ErrCodeFailedToParsePort,
@@ -299,22 +348,11 @@ func parseAccountHostPort(posAt, posSlash int, dsn string) (region, account, hos
 			break
 		}
 	}
-	host = dsn[posAt+1 : k]
-	if port == 0 && !strings.HasSuffix(host, "snowflakecomputing.com") {
-		// account name is specified instead of host:port
-		account = host
-		host = account + ".snowflakecomputing.com"
-		port = 443
-		posDot := strings.Index(account, ".")
-		if posDot > 0 {
-			region = account[posDot+1:]
-			account = account[:posDot]
-		}
-	}
-	return
+	cfg.Host = dsn[posAt+1 : k]
+	return transformAccountToHost(cfg)
 }
 
-// parseUserPassword pases the DSN string for username and password
+// parseUserPassword parses the DSN string for username and password
 func parseUserPassword(posAt int, dsn string) (user, password string) {
 	var k int
 	for k = 0; k < posAt; k++ {
@@ -388,7 +426,7 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 		case "application":
 			cfg.Application = value
 		case "authenticator":
-			cfg.Authenticator = value
+			cfg.Authenticator = strings.ToLower(value)
 		case "insecureMode":
 			var vv bool
 			vv, err = strconv.ParseBool(value)
@@ -396,19 +434,8 @@ func parseDSNParams(cfg *Config, params string) (err error) {
 				return
 			}
 			cfg.InsecureMode = vv
-		case "proxyHost":
-			proxyHost = value
-		case "proxyPort":
-			var vv int64
-			vv, err = strconv.ParseInt(value, 10, 64)
-			if err != nil {
-				return
-			}
-			proxyPort = int(vv)
-		case "proxyUser":
-			proxyUser = value
-		case "proxyPassword":
-			proxyPassword = value
+		case "token":
+			cfg.Token = value
 		default:
 			if cfg.Params == nil {
 				cfg.Params = make(map[string]*string)

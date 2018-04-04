@@ -1,7 +1,5 @@
-// Package gosnowflake is a utility package for Go Snowflake Driver
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
@@ -9,8 +7,6 @@ import (
 	"strconv"
 	"sync"
 	"time"
-
-	"github.com/golang/glog"
 )
 
 var timezones map[int]*time.Location

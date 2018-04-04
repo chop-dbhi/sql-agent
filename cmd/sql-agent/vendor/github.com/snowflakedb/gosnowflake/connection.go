@@ -1,7 +1,5 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
@@ -13,8 +11,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-
-	"github.com/golang/glog"
 )
 
 const (
@@ -153,7 +149,7 @@ func (sc *snowflakeConn) BeginTx(ctx context.Context, opts driver.TxOptions) (dr
 		return nil, driver.ErrBadConn
 	}
 	_, err := sc.exec(ctx, "BEGIN", false, false, nil)
-	if err != err {
+	if err != nil {
 		return nil, err
 	}
 	return &snowflakeTx{sc}, err
@@ -241,15 +237,17 @@ func (sc *snowflakeConn) QueryContext(ctx context.Context, query string, args []
 	rows.sc = sc
 	rows.RowType = data.Data.RowType
 	rows.ChunkDownloader = &snowflakeChunkDownloader{
-		sc:            sc,
-		ctx:           ctx,
-		CurrentChunk:  data.Data.RowSet,
-		ChunkMetas:    data.Data.Chunks,
-		Total:         int64(data.Data.Total),
-		TotalRowIndex: int64(-1),
-		Qrmk:          data.Data.Qrmk,
-		FuncDownload:  downloadChunk,
-		FuncGet:       getChunk,
+		sc:                 sc,
+		ctx:                ctx,
+		CurrentChunk:       data.Data.RowSet,
+		ChunkMetas:         data.Data.Chunks,
+		Total:              int64(data.Data.Total),
+		TotalRowIndex:      int64(-1),
+		Qrmk:               data.Data.Qrmk,
+		ChunkHeader:        data.Data.ChunkHeaders,
+		FuncDownload:       downloadChunk,
+		FuncDownloadHelper: downloadChunkHelper,
+		FuncGet:            getChunk,
 	}
 	rows.ChunkDownloader.start()
 	return rows, err
@@ -276,10 +274,7 @@ func (sc *snowflakeConn) Ping(ctx context.Context) error {
 	}
 	// TODO: handle noResult and isInternal
 	_, err := sc.exec(ctx, "SELECT 1", false, false, []driver.NamedValue{})
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 func (sc *snowflakeConn) populateSessionParameters(parameters []nameValueParameter) {

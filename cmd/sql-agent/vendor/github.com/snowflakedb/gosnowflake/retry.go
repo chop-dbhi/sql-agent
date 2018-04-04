@@ -1,11 +1,10 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -15,8 +14,6 @@ import (
 	"context"
 
 	"sync"
-
-	"github.com/golang/glog"
 )
 
 var random *rand.Rand
@@ -33,26 +30,6 @@ type waitAlgo struct {
 
 func randSecondDuration(n time.Duration) time.Duration {
 	return time.Duration(random.Int63n(int64(n/time.Second))) * time.Second
-}
-
-// exponential backoff (experimental)
-func (w *waitAlgo) exp(attempt int, sleep time.Duration) time.Duration {
-	return durationMax(durationMin(1<<uint(attempt)*w.base, w.cap), 1*time.Second)
-}
-
-// full jitter backoff (experimental)
-func (w *waitAlgo) fullJitter(attempt int, sleep time.Duration) time.Duration {
-	w.mutex.Lock()
-	defer w.mutex.Unlock()
-	return randSecondDuration(w.exp(attempt, sleep))
-}
-
-// equal jitter backoff (experimental)
-func (w *waitAlgo) eqJitter(attempt int, sleep time.Duration) time.Duration {
-	w.mutex.Lock()
-	defer w.mutex.Unlock()
-	t := w.exp(attempt, sleep) / time.Duration(2)
-	return t + randSecondDuration(t)
 }
 
 // decorrelated jitter backoff
@@ -89,33 +66,41 @@ func retryHTTP(
 	fullURL string,
 	headers map[string]string,
 	body []byte,
-	timeout time.Duration) (res *http.Response, err error) {
+	timeout time.Duration,
+	raise4XX bool) (res *http.Response, err error) {
 	totalTimeout := timeout
 	glog.V(2).Infof("retryHTTP.totalTimeout: %v", totalTimeout)
 	retryCounter := 0
 	sleepTime := time.Duration(0)
 	for {
 		req, err := req(method, fullURL, bytes.NewReader(body))
-		if req != nil {
-			req = req.WithContext(ctx)
-		}
 		if err != nil {
 			return nil, err
+		}
+		if req != nil {
+			// req can be nil in tests
+			req = req.WithContext(ctx)
 		}
 		for k, v := range headers {
 			req.Header.Set(k, v)
 		}
 		res, err = client.Do(req)
-		if err == nil && res.StatusCode == http.StatusOK {
+		if err == nil && res.StatusCode == http.StatusOK || err == context.Canceled {
+			// exit if success or canceled
+			break
+		}
+		if raise4XX && res != nil && res.StatusCode >= 400 && res.StatusCode < 500 {
+			// abort connection if raise4XX flag is enabled and the range of HTTP status code are 4XX.
+			// This is currently used for Snowflake login. The caller must generate an error object based on HTTP status.
 			break
 		}
 		// cannot just return 4xx and 5xx status as the error can be sporadic. retry often helps.
 		if err != nil {
 			glog.V(2).Infof(
-				"failed http connection. no response is returned. err: %v. retrying.\n", err)
+				"failed http connection. no response is returned. err: %v. retrying...\n", err)
 		} else {
 			glog.V(2).Infof(
-				"failed http connection. HTTP Status: %v. retrying.\n", res.StatusCode)
+				"failed http connection. HTTP Status: %v. retrying...\n", res.StatusCode)
 		}
 		// uses decorrelated jitter backoff
 		sleepTime = defaultWaitAlgo.decorr(retryCounter, sleepTime)
@@ -128,7 +113,10 @@ func retryHTTP(
 				if err != nil {
 					return nil, fmt.Errorf("timeout. err: %v. Hanging?", err)
 				}
-				return nil, fmt.Errorf("timeout. HTTP Status: %v. Hanging?", res.StatusCode)
+				if res != nil {
+					return nil, fmt.Errorf("timeout. HTTP Status: %v. Hanging?", res.StatusCode)
+				}
+				return nil, errors.New("timeout. Hanging?")
 			}
 		}
 		retryCounter++

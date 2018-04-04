@@ -2,16 +2,29 @@ package mssql
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"fmt"
-	"log"
 	"math"
 	"net"
-	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+func driverWithProcess(t *testing.T) *Driver {
+	return &Driver{
+		log:              optionalLogger{testLogger{t}},
+		processQueryText: true,
+	}
+}
+func driverNoProcess(t *testing.T) *Driver {
+	return &Driver{
+		log:              optionalLogger{testLogger{t}},
+		processQueryText: false,
+	}
+}
 
 func TestSelect(t *testing.T) {
 	conn := open(t)
@@ -30,6 +43,7 @@ func TestSelect(t *testing.T) {
 		{"cast(1 as int)", int64(1)},
 		{"cast(-1 as int)", int64(-1)},
 		{"cast(1 as tinyint)", int64(1)},
+		{"cast(255 as tinyint)", int64(255)},
 		{"cast(1 as smallint)", int64(1)},
 		{"cast(-1 as smallint)", int64(-1)},
 		{"cast(1 as bigint)", int64(1)},
@@ -70,6 +84,8 @@ func TestSelect(t *testing.T) {
 		{"cast(null as text)", nil},
 		{"cast(N'abc' as ntext)", "abc"},
 		{"cast(0x1234 as image)", []byte{0x12, 0x34}},
+		{"cast('abc' as char(3))", "abc"},
+		{"cast('abc' as varchar(3))", "abc"},
 		{"cast(N'проверка' as nvarchar(max))", "проверка"},
 		{"cast(N'Δοκιμή' as nvarchar(max))", "Δοκιμή"},
 		{"cast(cast(N'สวัสดี' as nvarchar(max)) collate Thai_CI_AI as varchar(max))", "สวัสดี"},                // cp874
@@ -145,6 +161,40 @@ func TestSelect(t *testing.T) {
 	}
 }
 
+func TestSelectDateTimeOffset(t *testing.T) {
+	type testStruct struct {
+		sql string
+		val time.Time
+	}
+	values := []testStruct{
+		{"cast('2010-11-15T11:56:45.123+01:00' as datetimeoffset(3))",
+			time.Date(2010, 11, 15, 11, 56, 45, 123000000, time.FixedZone("", 60*60))},
+		{"cast(cast('2010-11-15T11:56:45.123+10:00' as datetimeoffset(3)) as sql_variant)",
+			time.Date(2010, 11, 15, 11, 56, 45, 123000000, time.FixedZone("", 10*60*60))},
+	}
+
+	conn := open(t)
+	defer conn.Close()
+	for _, test := range values {
+		row := conn.QueryRow("select " + test.sql)
+		var retval interface{}
+		err := row.Scan(&retval)
+		if err != nil {
+			t.Error("Scan failed:", test.sql, err.Error())
+			continue
+		}
+		retvalDate := retval.(time.Time)
+		if retvalDate.UTC() != test.val.UTC() {
+			t.Errorf("UTC values don't match '%v' '%v' for test: %s", retvalDate, test.val, test.sql)
+			continue
+		}
+		if retvalDate.String() != test.val.String() {
+			t.Errorf("Locations don't match '%v' '%v' for test: %s", retvalDate.String(), test.val.String(), test.sql)
+			continue
+		}
+	}
+}
+
 func TestSelectNewTypes(t *testing.T) {
 	conn := open(t)
 	defer conn.Close()
@@ -181,16 +231,12 @@ func TestSelectNewTypes(t *testing.T) {
 			time.Date(2010, 11, 15, 11, 56, 45, 123000000, time.UTC)},
 		{"cast('2010-11-15T11:56:45' as datetime2(0))",
 			time.Date(2010, 11, 15, 11, 56, 45, 0, time.UTC)},
-		//{"cast('2010-11-15T11:56:45.123+10:00' as datetimeoffset(3))",
-		// time.Date(2010, 11, 15, 11, 56, 45, 123000000, time.FixedZone("", 10*60*60)) },
 		{"cast(cast('2000-01-01' as date) as sql_variant)",
 			time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)},
 		{"cast(cast('00:00:45.123' as time(3)) as sql_variant)",
 			time.Date(1, 1, 1, 00, 00, 45, 123000000, time.UTC)},
 		{"cast(cast('2010-11-15T11:56:45.123' as datetime2(3)) as sql_variant)",
 			time.Date(2010, 11, 15, 11, 56, 45, 123000000, time.UTC)},
-		//{"cast(cast('2010-11-15T11:56:45.123+10:00' as datetimeoffset(3)) as sql_variant)",
-		// time.Date(2010, 11, 15, 11, 56, 45, 123000000, time.FixedZone("", 10*60*60)) },
 	}
 	for _, test := range values {
 		stmt, err := conn.Prepare("select " + test.sql)
@@ -235,6 +281,51 @@ func TestTrans(t *testing.T) {
 	}
 	if err = tx.Rollback(); err != nil {
 		t.Fatal("Rollback failed", err.Error())
+	}
+}
+
+func TestNull(t *testing.T) {
+	conn := open(t)
+	defer conn.Close()
+
+	types := []string{
+		"tinyint",
+		"smallint",
+		"int",
+		"bigint",
+		"real",
+		"float",
+		"smallmoney",
+		"money",
+		"decimal",
+		//"varbinary(15)",
+		//"binary(15)",
+		"nvarchar(15)",
+		"nchar(15)",
+		"varchar(15)",
+		"char(15)",
+		"bit",
+		"smalldatetime",
+		"date",
+		"time",
+		"datetime",
+		"datetime2",
+		"datetimeoffset",
+		"uniqueidentifier",
+		"sql_variant",
+	}
+	for _, typ := range types {
+		row := conn.QueryRow("declare @x "+typ+" = ?; select @x", nil)
+		var retval interface{}
+		err := row.Scan(&retval)
+		if err != nil {
+			t.Error("Scan failed for type "+typ, err.Error())
+			return
+		}
+		if retval != nil {
+			t.Error("Value should be nil, but it is ", retval)
+			return
+		}
 	}
 }
 
@@ -296,42 +387,37 @@ func TestExec(t *testing.T) {
 	_ = res
 }
 
-func TestDefaultTimeout(t *testing.T) {
-	if testing.Short() {
-		return
-	}
-	conn := open(t)
-	defer conn.Close()
-
-	res, err := conn.Exec("waitfor delay '00:31'")
-	if err == nil {
-		t.Fatal("Exec should fail with timeout")
-	}
-	if neterr, ok := err.(net.Error); !ok || !neterr.Timeout() {
-		t.Fatal("Exec should fail with timeout, failed with", err)
-	}
-	_ = res
-}
-
 func TestShortTimeout(t *testing.T) {
 	if testing.Short() {
-		return
+		t.Skip("short")
 	}
-	dsn := makeConnStr() + ";Connection Timeout=2"
-	conn, err := sql.Open("mssql", dsn)
+	checkConnStr(t)
+	SetLogger(testLogger{t})
+	dsn := makeConnStr(t)
+	dsnParams := dsn.Query()
+	dsnParams.Set("Connection Timeout", "2")
+	dsn.RawQuery = dsnParams.Encode()
+	conn, err := sql.Open("mssql", dsn.String())
 	if err != nil {
 		t.Fatal("Open connection failed:", err.Error())
 	}
 	defer conn.Close()
 
-	res, err := conn.Exec("waitfor delay '00:03'")
+	_, err = conn.Exec("waitfor delay '00:00:15'")
 	if err == nil {
-		t.Fatal("Exec should fail with timeout")
+		t.Fatal("Exec should fail with timeout, but no failure occurred")
 	}
 	if neterr, ok := err.(net.Error); !ok || !neterr.Timeout() {
-		t.Fatal("Exec should fail with timeout, failed with", err)
+		t.Fatal("failure not a timeout, failed with", err)
 	}
-	_ = res
+
+	// connection should be usable after timeout
+	row := conn.QueryRow("select 1")
+	var val int64
+	err = row.Scan(&val)
+	if err != nil {
+		t.Fatal("Scan failed with", err)
+	}
 }
 
 func TestTwoQueries(t *testing.T) {
@@ -589,21 +675,65 @@ func TestIdentity(t *testing.T) {
 func TestDateTimeParam(t *testing.T) {
 	conn := open(t)
 	defer conn.Close()
+	type testStruct struct {
+		t time.Time
+	}
+	values := []testStruct{
+		{time.Date(2004, 6, 3, 12, 13, 14, 150000000, time.UTC)},
+		{time.Date(4, 6, 3, 12, 13, 14, 150000000, time.UTC)},
+	}
+	for _, test := range values {
+		var t2 time.Time
+		err := conn.QueryRow("select ?", test.t).Scan(&t2)
+		if err != nil {
+			t.Error("select / scan failed", err.Error())
+			continue
+		}
+		if test.t.Sub(t2) != 0 {
+			t.Errorf("datetime does not match: '%s' '%s' delta: %d", test.t, t2, test.t.Sub(t2))
+		}
+	}
 
-	t1, err := time.Parse("2006-01-02 15:04:05.99", "2004-06-03 12:13:14.15")
-	if err != nil {
-		t.Error("time parse failed", err.Error())
-		return
+}
+
+func TestUniqueIdentifierParam(t *testing.T) {
+	conn := open(t)
+	defer conn.Close()
+	type testStruct struct {
+		name string
+		uuid interface{}
 	}
-	var t2 time.Time
-	err = conn.QueryRow("select ?", t1).Scan(&t2)
-	if err != nil {
-		t.Error("select / scan failed", err.Error())
-		return
+
+	expected := UniqueIdentifier{0x01, 0x23, 0x45, 0x67,
+		0x89, 0xAB,
+		0xCD, 0xEF,
+		0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF,
 	}
-	if t1.Sub(t2) != 0 {
-		t.Errorf("datetime does not match: '%s' '%s' delta: %d", t1, t2, t1.Sub(t2))
-		return
+
+	values := []testStruct{
+		{
+			"[]byte",
+			[]byte{0x67, 0x45, 0x23, 0x01,
+				0xAB, 0x89,
+				0xEF, 0xCD,
+				0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD, 0xEF}},
+		{
+			"string",
+			"01234567-89ab-cdef-0123-456789abcdef"},
+	}
+
+	for _, test := range values {
+		t.Run(test.name, func(t *testing.T) {
+			var uuid2 UniqueIdentifier
+			err := conn.QueryRow("select ?", test.uuid).Scan(&uuid2)
+			if err != nil {
+				t.Fatal("select / scan failed", err.Error())
+			}
+
+			if expected != uuid2 {
+				t.Errorf("uniqueidentifier does not match: '%s' '%s'", expected, uuid2)
+			}
+		})
 	}
 }
 
@@ -659,27 +789,414 @@ func TestBug32(t *testing.T) {
 	}
 }
 
-func TestLogging(t *testing.T) {
-	flags := log.Flags()
-	defer func() {
-		log.SetFlags(flags)
-		log.SetOutput(os.Stderr)
-	}()
-	log.SetFlags(0)
-	var b bytes.Buffer
-	log.SetOutput(&b)
-
-	dsn := makeConnStr() + ";Log=2"
-	conn, err := sql.Open("mssql", dsn)
-	if err != nil {
-		t.Fatal("Open connection failed:", err.Error())
-	}
+func TestIgnoreEmptyResults(t *testing.T) {
+	conn := open(t)
 	defer conn.Close()
-	_, err = conn.Exec("print 'test'")
+	rows, err := conn.Query("set nocount on; select 2")
 	if err != nil {
-		t.Fatal("Exec print failed", err.Error())
+		t.Fatal("Query failed", err.Error())
 	}
-	if b.String() != "test\n" {
-		t.Fatal("logging test failed, got", b.String())
+	if !rows.Next() {
+		t.Fatal("Query didn't return row")
+	}
+	var fld1 int32
+	err = rows.Scan(&fld1)
+	if err != nil {
+		t.Fatal("Scan failed", err)
+	}
+	if fld1 != 2 {
+		t.Fatal("Returned value doesn't match")
+	}
+}
+
+func TestStmt_SetQueryNotification(t *testing.T) {
+	checkConnStr(t)
+	mssqldriver := driverWithProcess(t)
+	cn, err := mssqldriver.Open(makeConnStr(t).String())
+	if err != nil {
+		t.Fatalf("failed to open connection: %v", err)
+	}
+	stmt, err := cn.Prepare("SELECT 1")
+	if err != nil {
+		t.Error("Connection failed", err)
+	}
+
+	sqlstmt := stmt.(*Stmt)
+	sqlstmt.SetQueryNotification("ABC", "service=WebCacheNotifications", time.Hour)
+
+	rows, err := sqlstmt.Query(nil)
+	if err == nil {
+		rows.Close()
+	}
+	// notifications are sent to Service Broker
+	// see for more info: https://github.com/denisenkom/go-mssqldb/pull/90
+}
+
+func TestErrorInfo(t *testing.T) {
+	conn := open(t)
+	defer conn.Close()
+
+	_, err := conn.Exec("select bad")
+	if sqlError, ok := err.(Error); ok {
+		if sqlError.SQLErrorNumber() != 207 /*invalid column name*/ {
+			t.Errorf("Query failed with unexpected error number %d %s", sqlError.SQLErrorNumber(), sqlError.SQLErrorMessage())
+		}
+	} else {
+		t.Error("Failed to convert error to SQLErorr", err)
+	}
+}
+
+func TestSetLanguage(t *testing.T) {
+	conn := open(t)
+	defer conn.Close()
+
+	_, err := conn.Exec("set language russian")
+	if err != nil {
+		t.Errorf("Query failed with unexpected error %s", err)
+	}
+
+	row := conn.QueryRow("select cast(getdate() as varchar(50))")
+	var val interface{}
+	err = row.Scan(&val)
+	if err != nil {
+		t.Errorf("Query failed with unexpected error %s", err)
+	}
+	t.Log("Returned value", val)
+}
+
+func TestConnectionClosing(t *testing.T) {
+	conn := open(t)
+	defer conn.Close()
+	for i := 1; i <= 100; i++ {
+		if conn.Stats().OpenConnections > 1 {
+			t.Errorf("Open connections is expected to stay <= 1, but it is %d", conn.Stats().OpenConnections)
+			return
+		}
+
+		stmt, err := conn.Query("select 1")
+		if err != nil {
+			t.Fatalf("Query failed with unexpected error %s", err)
+		}
+		for stmt.Next() {
+			var val interface{}
+			err := stmt.Scan(&val)
+			if err != nil {
+				t.Fatalf("Query failed with unexpected error %s", err)
+			}
+		}
+	}
+}
+
+func TestBeginTranError(t *testing.T) {
+	checkConnStr(t)
+	drv := driverWithProcess(t)
+	conn, err := drv.open(context.Background(), makeConnStr(t).String())
+	if err != nil {
+		t.Fatalf("Open failed with error %v", err)
+	}
+
+	defer conn.Close()
+	// close actual connection to make begin transaction to fail during sending of a packet
+	conn.sess.buf.transport.Close()
+
+	ctx := context.Background()
+	_, err = conn.begin(ctx, isolationSnapshot)
+	if err == nil || conn.connectionGood == true {
+		t.Errorf("begin should fail as a bad connection, err=%v", err)
+	}
+
+	// reopen connection
+	conn, err = drv.open(context.Background(), makeConnStr(t).String())
+	if err != nil {
+		t.Fatalf("Open failed with error %v", err)
+	}
+	err = conn.sendBeginRequest(ctx, isolationSerializable)
+	if err != nil {
+		t.Fatalf("sendBeginRequest failed with error %v", err)
+	}
+
+	// close connection to cause processBeginResponse to fail
+	conn.sess.buf.transport.Close()
+	_, err = conn.processBeginResponse(ctx)
+	switch err {
+	case nil:
+		t.Error("processBeginResponse should fail but it succeeded")
+	case driver.ErrBadConn:
+		t.Error("processBeginResponse should fail with error different from ErrBadConn but it did")
+	}
+
+	if conn.connectionGood {
+		t.Fatal("Connection should be in a bad state")
+	}
+}
+
+func TestCommitTranError(t *testing.T) {
+	checkConnStr(t)
+	drv := driverWithProcess(t)
+	conn, err := drv.open(context.Background(), makeConnStr(t).String())
+	if err != nil {
+		t.Fatalf("Open failed with error %v", err)
+	}
+
+	defer conn.Close()
+	// close actual connection to make commit transaction to fail during sending of a packet
+	conn.sess.buf.transport.Close()
+
+	ctx := context.Background()
+	err = conn.Commit()
+	if err == nil || conn.connectionGood {
+		t.Errorf("begin should fail and set the connection to bad, but it returned %v", err)
+	}
+
+	// reopen connection
+	conn, err = drv.open(context.Background(), makeConnStr(t).String())
+	if err != nil {
+		t.Fatalf("Open failed with error %v", err)
+	}
+	err = conn.sendCommitRequest()
+	if err != nil {
+		t.Fatalf("sendCommitRequest failed with error %v", err)
+	}
+
+	// close connection to cause processBeginResponse to fail
+	conn.sess.buf.transport.Close()
+	err = conn.simpleProcessResp(ctx)
+	switch err {
+	case nil:
+		t.Error("simpleProcessResp should fail but it succeeded")
+	case driver.ErrBadConn:
+		t.Error("simpleProcessResp should fail with error different from ErrBadConn but it did")
+	}
+
+	if conn.connectionGood {
+		t.Fatal("Connection should be in a bad state")
+	}
+
+	// reopen connection
+	conn, err = drv.open(context.Background(), makeConnStr(t).String())
+	defer conn.Close()
+	if err != nil {
+		t.Fatalf("Open failed with error %v", err)
+	}
+	// should fail because there is no transaction
+	err = conn.Commit()
+	switch err {
+	case nil:
+		t.Error("Commit should fail but it succeeded")
+	case driver.ErrBadConn:
+		t.Error("Commit should fail with error different from ErrBadConn but it did")
+	}
+}
+
+func TestRollbackTranError(t *testing.T) {
+	checkConnStr(t)
+	drv := driverWithProcess(t)
+	conn, err := drv.open(context.Background(), makeConnStr(t).String())
+	if err != nil {
+		t.Fatalf("Open failed with error %v", err)
+	}
+
+	defer conn.Close()
+	// close actual connection to make commit transaction to fail during sending of a packet
+	conn.sess.buf.transport.Close()
+
+	ctx := context.Background()
+	err = conn.Rollback()
+	if err == nil || conn.connectionGood {
+		t.Errorf("Rollback should fail and set connection to bad but it returned %v", err)
+	}
+
+	// reopen connection
+	conn, err = drv.open(context.Background(), makeConnStr(t).String())
+	if err != nil {
+		t.Fatalf("Open failed with error %v", err)
+	}
+	err = conn.sendRollbackRequest()
+	if err != nil {
+		t.Fatalf("sendCommitRequest failed with error %v", err)
+	}
+
+	// close connection to cause processBeginResponse to fail
+	conn.sess.buf.transport.Close()
+	err = conn.simpleProcessResp(ctx)
+	switch err {
+	case nil:
+		t.Error("simpleProcessResp should fail but it succeeded")
+	case driver.ErrBadConn:
+		t.Error("simpleProcessResp should fail with error different from ErrBadConn but it did")
+	}
+
+	if conn.connectionGood {
+		t.Fatal("Connection should be in a bad state")
+	}
+
+	// reopen connection
+	conn, err = drv.open(context.Background(), makeConnStr(t).String())
+	defer conn.Close()
+	if err != nil {
+		t.Fatalf("Open failed with error %v", err)
+	}
+	// should fail because there is no transaction
+	err = conn.Rollback()
+	switch err {
+	case nil:
+		t.Error("Commit should fail but it succeeded")
+	case driver.ErrBadConn:
+		t.Error("Commit should fail with error different from ErrBadConn but it did")
+	}
+}
+
+func TestSendQueryErrors(t *testing.T) {
+	checkConnStr(t)
+	drv := driverWithProcess(t)
+	conn, err := drv.open(context.Background(), makeConnStr(t).String())
+	if err != nil {
+		t.FailNow()
+	}
+
+	defer conn.Close()
+	stmt, err := conn.prepareContext(context.Background(), "select 1")
+	if err != nil {
+		t.FailNow()
+	}
+
+	// should fail because parameter is invalid
+	_, err = stmt.Query([]driver.Value{conn})
+	if err == nil {
+		t.Fail()
+	}
+
+	// close actual connection to make commit transaction to fail during sending of a packet
+	conn.sess.buf.transport.Close()
+
+	// should fail because connection is closed
+	_, err = stmt.Query([]driver.Value{})
+	if err == nil || stmt.c.connectionGood {
+		t.Fail()
+	}
+
+	stmt, err = conn.prepareContext(context.Background(), "select ?")
+	if err != nil {
+		t.FailNow()
+	}
+	// should fail because connection is closed
+	_, err = stmt.Query([]driver.Value{int64(1)})
+	if err == nil || stmt.c.connectionGood {
+		t.Fail()
+	}
+}
+
+func TestProcessQueryErrors(t *testing.T) {
+	checkConnStr(t)
+	drv := driverWithProcess(t)
+	conn, err := drv.open(context.Background(), makeConnStr(t).String())
+	if err != nil {
+		t.Fatal("open expected to succeed, but it failed with", err)
+	}
+	stmt, err := conn.prepareContext(context.Background(), "select 1")
+	if err != nil {
+		t.Fatal("prepareContext expected to succeed, but it failed with", err)
+	}
+	err = stmt.sendQuery([]namedValue{})
+	if err != nil {
+		t.Fatal("sendQuery expected to succeed, but it failed with", err)
+	}
+	// close actual connection to make reading response to fail
+	conn.sess.buf.transport.Close()
+	_, err = stmt.processQueryResponse(context.Background())
+	if err == nil {
+		t.Error("processQueryResponse expected to fail but it succeeded")
+	}
+	// should not fail with ErrBadConn because query was successfully sent to server
+	if err == driver.ErrBadConn {
+		t.Error("processQueryResponse expected to fail with error other than ErrBadConn but it failed with it")
+	}
+
+	if conn.connectionGood {
+		t.Fatal("Connection should be in a bad state")
+	}
+}
+
+func TestSendExecErrors(t *testing.T) {
+	checkConnStr(t)
+	drv := driverWithProcess(t)
+	conn, err := drv.open(context.Background(), makeConnStr(t).String())
+	if err != nil {
+		t.FailNow()
+	}
+
+	defer conn.Close()
+	stmt, err := conn.prepareContext(context.Background(), "select 1")
+	if err != nil {
+		t.FailNow()
+	}
+
+	// should fail because parameter is invalid
+	_, err = stmt.Exec([]driver.Value{conn})
+	if err == nil {
+		t.Fail()
+	}
+
+	// close actual connection to make commit transaction to fail during sending of a packet
+	conn.sess.buf.transport.Close()
+
+	// should fail because connection is closed
+	_, err = stmt.Exec([]driver.Value{})
+	if err == nil || stmt.c.connectionGood {
+		t.Fail()
+	}
+
+	stmt, err = conn.prepareContext(context.Background(), "select ?")
+	if err != nil {
+		t.FailNow()
+	}
+	// should fail because connection is closed
+	_, err = stmt.Exec([]driver.Value{int64(1)})
+	if err == nil || stmt.c.connectionGood {
+		t.Fail()
+	}
+}
+
+func TestLongConnection(t *testing.T) {
+	checkConnStr(t)
+
+	list := []struct {
+		connTimeout  string
+		queryTimeout string
+		ctxTimeout   time.Duration
+		wantFail     bool
+	}{
+		{"1", "00:00:02", 6 * time.Second, true},
+		{"2", "00:00:01", 6 * time.Second, false},
+
+		// Check no connection timeout.
+		{"0", "00:00:01", 2 * time.Second, false},
+		// {"0", "00:00:45", 60 * time.Second, false}, // Skip for normal testing to limit time.
+	}
+
+	for i, item := range list {
+		t.Run(fmt.Sprintf("item-index-%d,want-fail=%t", i, item.wantFail), func(t *testing.T) {
+			dsn := makeConnStr(t)
+			dsnParams := dsn.Query()
+			dsnParams.Set("connection timeout", item.connTimeout)
+			dsn.RawQuery = dsnParams.Encode()
+
+			db, err := sql.Open("sqlserver", dsn.String())
+			if err != nil {
+				t.Fatalf("failed to open driver sqlserver")
+			}
+			defer db.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), item.ctxTimeout)
+			defer cancel()
+
+			_, err = db.ExecContext(ctx, "WAITFOR DELAY '"+item.queryTimeout+"';")
+			if item.wantFail && err == nil {
+				t.Fatal("exec no error")
+			}
+			if !item.wantFail && err != nil {
+				t.Fatal("exec error", err)
+			}
+		})
 	}
 }

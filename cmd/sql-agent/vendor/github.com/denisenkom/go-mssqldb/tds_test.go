@@ -2,9 +2,11 @@ package mssql
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -19,7 +21,8 @@ func (t *MockTransport) Close() error {
 }
 
 func TestSendLogin(t *testing.T) {
-	buf := newTdsBuffer(1024, new(MockTransport))
+	memBuf := new(MockTransport)
+	buf := newTdsBuffer(1024, memBuf)
 	login := login{
 		TDSVersion:     verTDS73,
 		PacketSize:     0x1000,
@@ -57,24 +60,25 @@ func TestSendLogin(t *testing.T) {
 		0, 97, 0, 114, 0, 121, 0, 101, 0, 110, 0, 100, 0, 97, 0, 116, 0, 97, 0, 98,
 		0, 97, 0, 115, 0, 101, 0, 102, 0, 105, 0, 108, 0, 101, 0, 112, 0, 97, 0,
 		116, 0, 104, 0}
-	out := buf.buf[:buf.pos]
+	out := memBuf.Bytes()
 	if !bytes.Equal(ref, out) {
-		t.Error("input output don't match")
+		fmt.Println("Expected:")
 		fmt.Print(hex.Dump(ref))
+		fmt.Println("Returned:")
 		fmt.Print(hex.Dump(out))
+		t.Error("input output don't match")
 	}
 }
 
 func TestSendSqlBatch(t *testing.T) {
-	addr := os.Getenv("HOST")
-	instance := os.Getenv("INSTANCE")
+	checkConnStr(t)
+	p, err := parseConnectParams(makeConnStr(t).String())
+	if err != nil {
+		t.Error("parseConnectParams failed:", err.Error())
+		return
+	}
 
-	conn, err := connect(map[string]string{
-		"server":   fmt.Sprintf("%s\\%s", addr, instance),
-		"user id":  os.Getenv("SQLUSER"),
-		"password": os.Getenv("SQLPASSWORD"),
-		"database": os.Getenv("DATABASE"),
-	})
+	conn, err := connect(context.Background(), optionalLogger{testLogger{t}}, p)
 	if err != nil {
 		t.Error("Open connection failed:", err.Error())
 		return
@@ -85,14 +89,14 @@ func TestSendSqlBatch(t *testing.T) {
 		{hdrtype: dataStmHdrTransDescr,
 			data: transDescrHdr{0, 1}.pack()},
 	}
-	err = sendSqlBatch72(conn.buf, "select 1", headers)
+	err = sendSqlBatch72(conn.buf, "select 1", headers, true)
 	if err != nil {
 		t.Error("Sending sql batch failed", err.Error())
 		return
 	}
 
 	ch := make(chan tokenStruct, 5)
-	go processResponse(conn, ch)
+	go processResponse(context.Background(), conn, ch, nil)
 
 	var lastRow []interface{}
 loop:
@@ -109,6 +113,10 @@ loop:
 		}
 	}
 
+	if len(lastRow) == 0 {
+		t.Fatal("expected row but no row set")
+	}
+
 	switch value := lastRow[0].(type) {
 	case int32:
 		if value != 1 {
@@ -118,52 +126,77 @@ loop:
 	}
 }
 
-func makeConnStr() string {
-	addr := os.Getenv("HOST")
-	instance := os.Getenv("INSTANCE")
-	user := os.Getenv("SQLUSER")
-	password := os.Getenv("SQLPASSWORD")
-	database := os.Getenv("DATABASE")
-	return fmt.Sprintf(
-		"Server=%s\\%s;User Id=%s;Password=%s;Database=%s;log=63",
-		addr, instance, user, password, database)
+func checkConnStr(t *testing.T) {
+	if len(os.Getenv("SQLSERVER_DSN")) > 0 {
+		return
+	}
+	if len(os.Getenv("HOST")) > 0 && len(os.Getenv("DATABASE")) > 0 {
+		return
+	}
+	t.Skip("no database connection string")
+}
+
+// makeConnStr returns a URL struct so it may be modified by various
+// tests before used as a DSN.
+func makeConnStr(t *testing.T) *url.URL {
+	dsn := os.Getenv("SQLSERVER_DSN")
+	if len(dsn) > 0 {
+		parsed, err := url.Parse(dsn)
+		if err != nil {
+			t.Fatal("unable to parse SQLSERVER_DSN as URL", err)
+		}
+		values := parsed.Query()
+		if values.Get("log") == "" {
+			values.Set("log", "127")
+		}
+		parsed.RawQuery = values.Encode()
+		return parsed
+	}
+	values := url.Values{}
+	values.Set("log", "127")
+	values.Set("database", os.Getenv("DATABASE"))
+	return &url.URL{
+		Scheme:   "sqlserver",
+		Host:     os.Getenv("HOST"),
+		Path:     os.Getenv("INSTANCE"),
+		User:     url.UserPassword(os.Getenv("SQLUSER"), os.Getenv("SQLPASSWORD")),
+		RawQuery: values.Encode(),
+	}
+}
+
+type testLogger struct {
+	t *testing.T
+}
+
+func (l testLogger) Printf(format string, v ...interface{}) {
+	l.t.Logf(format, v...)
+}
+
+func (l testLogger) Println(v ...interface{}) {
+	l.t.Log(v...)
 }
 
 func open(t *testing.T) *sql.DB {
-	conn, err := sql.Open("mssql", makeConnStr())
+	checkConnStr(t)
+	SetLogger(testLogger{t})
+	conn, err := sql.Open("mssql", makeConnStr(t).String())
 	if err != nil {
 		t.Error("Open connection failed:", err.Error())
 		return nil
 	}
+
 	return conn
 }
 
 func TestConnect(t *testing.T) {
-	conn, err := sql.Open("mssql", makeConnStr())
+	checkConnStr(t)
+	SetLogger(testLogger{t})
+	conn, err := sql.Open("mssql", makeConnStr(t).String())
 	if err != nil {
 		t.Error("Open connection failed:", err.Error())
 		return
 	}
 	defer conn.Close()
-}
-
-func TestBadConnect(t *testing.T) {
-	badDsns := []string{
-		//"Server=badhost",
-		fmt.Sprintf("Server=%s\\%s;User ID=baduser;Password=badpwd",
-			os.Getenv("HOST"), os.Getenv("INSTANCE")),
-	}
-	for _, badDsn := range badDsns {
-		conn, err := sql.Open("mssql", badDsn)
-		if err != nil {
-			t.Error("Open connection failed:", err.Error())
-		}
-		defer conn.Close()
-		err = conn.Ping()
-		if err == nil {
-			t.Error("Ping should fail for connection: ", badDsn)
-		}
-	}
 }
 
 func simpleQuery(conn *sql.DB, t *testing.T) (stmt *sql.Stmt) {
@@ -286,8 +319,17 @@ func TestPing(t *testing.T) {
 }
 
 func TestSecureWithInvalidHostName(t *testing.T) {
-	dsn := makeConnStr() + ";Encrypt=true;TrustServerCertificate=false;hostNameInCertificate=foo.bar"
-	conn, err := sql.Open("mssql", dsn)
+	checkConnStr(t)
+	SetLogger(testLogger{t})
+
+	dsn := makeConnStr(t)
+	dsnParams := dsn.Query()
+	dsnParams.Set("encrypt", "true")
+	dsnParams.Set("TrustServerCertificate", "false")
+	dsnParams.Set("hostNameInCertificate", "foo.bar")
+	dsn.RawQuery = dsnParams.Encode()
+
+	conn, err := sql.Open("mssql", dsn.String())
 	if err != nil {
 		t.Fatal("Open connection failed:", err.Error())
 	}
@@ -299,8 +341,16 @@ func TestSecureWithInvalidHostName(t *testing.T) {
 }
 
 func TestSecureConnection(t *testing.T) {
-	dsn := makeConnStr() + ";Encrypt=true;TrustServerCertificate=true"
-	conn, err := sql.Open("mssql", dsn)
+	checkConnStr(t)
+	SetLogger(testLogger{t})
+
+	dsn := makeConnStr(t)
+	dsnParams := dsn.Query()
+	dsnParams.Set("encrypt", "true")
+	dsnParams.Set("TrustServerCertificate", "true")
+	dsn.RawQuery = dsnParams.Encode()
+
+	conn, err := sql.Open("mssql", dsn.String())
 	if err != nil {
 		t.Fatal("Open connection failed:", err.Error())
 	}
@@ -323,14 +373,131 @@ func TestSecureConnection(t *testing.T) {
 	}
 }
 
-func TestParseConnectParamsKeepAlive(t *testing.T) {
-	params := parseConnectionString("keepAlive=60")
-	parsedParams, err := parseConnectParams(params)
-	if err != nil {
-		t.Fatal("cannot parse params: ", err)
-	}
+func TestInvalidConnectionString(t *testing.T) {
+	connStrings := []string{
+		"log=invalid",
+		"port=invalid",
+		"packet size=invalid",
+		"connection timeout=invalid",
+		"dial timeout=invalid",
+		"keepalive=invalid",
+		"encrypt=invalid",
+		"trustservercertificate=invalid",
+		"failoverport=invalid",
 
-	if parsedParams.keepAlive != time.Duration(60)*time.Second {
-		t.Fail()
+		// ODBC mode
+		"odbc:password={",
+		"odbc:password={somepass",
+		"odbc:password={somepass}}",
+		"odbc:password={some}pass",
+	}
+	for _, connStr := range connStrings {
+		_, err := parseConnectParams(connStr)
+		if err == nil {
+			t.Errorf("Connection expected to fail for connection string %s but it didn't", connStr)
+			continue
+		} else {
+			t.Logf("Connection failed for %s as expected with error %v", connStr, err)
+		}
+	}
+}
+
+func TestValidConnectionString(t *testing.T) {
+	type testStruct struct {
+		connStr string
+		check   func(connectParams) bool
+	}
+	connStrings := []testStruct{
+		{"server=server\\instance;database=testdb;user id=tester;password=pwd", func(p connectParams) bool {
+			return p.host == "server" && p.instance == "instance" && p.user == "tester" && p.password == "pwd"
+		}},
+		{"server=.", func(p connectParams) bool { return p.host == "localhost" }},
+		{"server=(local)", func(p connectParams) bool { return p.host == "localhost" }},
+		{"ServerSPN=serverspn;Workstation ID=workstid", func(p connectParams) bool { return p.serverSPN == "serverspn" && p.workstation == "workstid" }},
+		{"failoverpartner=fopartner;failoverport=2000", func(p connectParams) bool { return p.failOverPartner == "fopartner" && p.failOverPort == 2000 }},
+		{"app name=appname;applicationintent=ReadOnly", func(p connectParams) bool { return p.appname == "appname" && (p.typeFlags&fReadOnlyIntent != 0) }},
+		{"encrypt=disable", func(p connectParams) bool { return p.disableEncryption }},
+		{"encrypt=true", func(p connectParams) bool { return p.encrypt && !p.disableEncryption }},
+		{"encrypt=false", func(p connectParams) bool { return !p.encrypt && !p.disableEncryption }},
+		{"trustservercertificate=true", func(p connectParams) bool { return p.trustServerCertificate }},
+		{"trustservercertificate=false", func(p connectParams) bool { return !p.trustServerCertificate }},
+		{"certificate=abc", func(p connectParams) bool { return p.certificate == "abc" }},
+		{"hostnameincertificate=abc", func(p connectParams) bool { return p.hostInCertificate == "abc" }},
+		{"connection timeout=3;dial timeout=4;keepalive=5", func(p connectParams) bool {
+			return p.conn_timeout == 3*time.Second && p.dial_timeout == 4*time.Second && p.keepAlive == 5*time.Second
+		}},
+		{"log=63", func(p connectParams) bool { return p.logFlags == 63 && p.port == 1433 }},
+		{"log=63;port=1000", func(p connectParams) bool { return p.logFlags == 63 && p.port == 1000 }},
+		{"log=64", func(p connectParams) bool { return p.logFlags == 64 && p.packetSize == 4096 }},
+		{"log=64;packet size=0", func(p connectParams) bool { return p.logFlags == 64 && p.packetSize == 512 }},
+		{"log=64;packet size=300", func(p connectParams) bool { return p.logFlags == 64 && p.packetSize == 512 }},
+		{"log=64;packet size=8192", func(p connectParams) bool { return p.logFlags == 64 && p.packetSize == 8192 }},
+		{"log=64;packet size=48000", func(p connectParams) bool { return p.logFlags == 64 && p.packetSize == 32767 }},
+
+		// those are supported currently, but maybe should not be
+		{"someparam", func(p connectParams) bool { return true }},
+		{";;=;", func(p connectParams) bool { return true }},
+
+		// ODBC mode
+		{"odbc:server=somehost;user id=someuser;password=somepass", func(p connectParams) bool {
+			return p.host == "somehost" && p.user == "someuser" && p.password == "somepass"
+		}},
+		{"odbc:server=somehost;user id=someuser;password=some{pass", func(p connectParams) bool {
+			return p.host == "somehost" && p.user == "someuser" && p.password == "some{pass"
+		}},
+		{"odbc:server={somehost};user id={someuser};password={somepass}", func(p connectParams) bool {
+			return p.host == "somehost" && p.user == "someuser" && p.password == "somepass"
+		}},
+		{"odbc:server={somehost};user id={someuser};password={some=pass}", func(p connectParams) bool {
+			return p.host == "somehost" && p.user == "someuser" && p.password == "some=pass"
+		}},
+		{"odbc:server={somehost};user id={someuser};password={some;pass}", func(p connectParams) bool {
+			return p.host == "somehost" && p.user == "someuser" && p.password == "some;pass"
+		}},
+		{"odbc:server={somehost};user id={someuser};password={some{pass}", func(p connectParams) bool {
+			return p.host == "somehost" && p.user == "someuser" && p.password == "some{pass"
+		}},
+		{"odbc:server={somehost};user id={someuser};password={some}}pass}", func(p connectParams) bool {
+			return p.host == "somehost" && p.user == "someuser" && p.password == "some}pass"
+		}},
+		{"odbc:server={somehost};user id={someuser};password={some{}}p=a;ss}", func(p connectParams) bool {
+			return p.host == "somehost" && p.user == "someuser" && p.password == "some{}p=a;ss"
+		}},
+		{"odbc: server = somehost; user id =  someuser ; password = {some pass } ", func(p connectParams) bool {
+			return p.host == "somehost" && p.user == "someuser" && p.password == "some pass "
+		}},
+
+		// URL mode
+		{"sqlserver://somehost?connection+timeout=30", func(p connectParams) bool {
+			return p.host == "somehost" && p.port == 1433 && p.instance == "" && p.conn_timeout == 30*time.Second
+		}},
+		{"sqlserver://someuser@somehost?connection+timeout=30", func(p connectParams) bool {
+			return p.host == "somehost" && p.port == 1433 && p.instance == "" && p.user == "someuser" && p.password == "" && p.conn_timeout == 30*time.Second
+		}},
+		{"sqlserver://someuser:@somehost?connection+timeout=30", func(p connectParams) bool {
+			return p.host == "somehost" && p.port == 1433 && p.instance == "" && p.user == "someuser" && p.password == "" && p.conn_timeout == 30*time.Second
+		}},
+		{"sqlserver://someuser:foo%3A%2F%5C%21~%40;bar@somehost?connection+timeout=30", func(p connectParams) bool {
+			return p.host == "somehost" && p.port == 1433 && p.instance == "" && p.user == "someuser" && p.password == "foo:/\\!~@;bar" && p.conn_timeout == 30*time.Second
+		}},
+		{"sqlserver://someuser:foo%3A%2F%5C%21~%40;bar@somehost:1434?connection+timeout=30", func(p connectParams) bool {
+			return p.host == "somehost" && p.port == 1434 && p.instance == "" && p.user == "someuser" && p.password == "foo:/\\!~@;bar" && p.conn_timeout == 30*time.Second
+		}},
+		{"sqlserver://someuser:foo%3A%2F%5C%21~%40;bar@somehost:1434/someinstance?connection+timeout=30", func(p connectParams) bool {
+			return p.host == "somehost" && p.port == 1434 && p.instance == "someinstance" && p.user == "someuser" && p.password == "foo:/\\!~@;bar" && p.conn_timeout == 30*time.Second
+		}},
+	}
+	for _, ts := range connStrings {
+		p, err := parseConnectParams(ts.connStr)
+		if err == nil {
+			t.Logf("Connection string was parsed successfully %s", ts.connStr)
+		} else {
+			t.Errorf("Connection string %s failed to parse with error %s", ts.connStr, err)
+			continue
+		}
+
+		if !ts.check(p) {
+			t.Errorf("Check failed on conn str %s", ts.connStr)
+		}
 	}
 }

@@ -1,6 +1,6 @@
-#sqlx
+# sqlx
 
-[![Build Status](https://drone.io/github.com/jmoiron/sqlx/status.png)](https://drone.io/github.com/jmoiron/sqlx/latest) [![Godoc](http://img.shields.io/badge/godoc-reference-blue.svg?style=flat)](https://godoc.org/github.com/jmoiron/sqlx) [![license](http://img.shields.io/badge/license-MIT-red.svg?style=flat)](https://raw.githubusercontent.com/jmoiron/sqlx/master/LICENSE)
+[![Build Status](https://travis-ci.org/jmoiron/sqlx.svg?branch=master)](https://travis-ci.org/jmoiron/sqlx) [![Coverage Status](https://coveralls.io/repos/github/jmoiron/sqlx/badge.svg?branch=master)](https://coveralls.io/github/jmoiron/sqlx?branch=master) [![Godoc](http://img.shields.io/badge/godoc-reference-blue.svg?style=flat)](https://godoc.org/github.com/jmoiron/sqlx) [![license](http://img.shields.io/badge/license-MIT-red.svg?style=flat)](https://raw.githubusercontent.com/jmoiron/sqlx/master/LICENSE)
 
 sqlx is a library which provides a set of extensions on go's standard
 `database/sql` library.  The sqlx versions of `sql.DB`, `sql.TX`, `sql.Stmt`,
@@ -20,26 +20,13 @@ explains how to use `database/sql` along with sqlx.
 
 ## Recent Changes
 
-The addition of `sqlx.In` and `sqlx.Named`, which can be used to bind IN style
-queries and named queries respectively.
+* sqlx/types.JsonText has been renamed to JSONText to follow Go naming conventions.
 
-```go
-ids := []int{1, 2, 3}
-query, args, err := sqlx.In("SELECT * FROM person WHERE id IN(?);", ids)
+This breaks backwards compatibility, but it's in a way that is trivially fixable
+(`s/JsonText/JSONText/g`).  The `types` package is both experimental and not in
+active development currently.
 
-chris := Person{First: "Christian", Last: "Cullen"}
-query, args, err := sqlx.Named("INSERT INTO person VALUES (:first, :last);", chris)
-
-// these can be combined:
-arg := map[string]interface{}{
-    "published": true,
-    "authors": []{8, 19, 32, 44},
-}
-query, args, err := sqlx.Named("SELECT * FROM articles WHERE published=:published AND author_id IN (:authors)", arg)
-query, args, err := sqlx.In(query, args...)
-// finally, if you're using eg. pg, you can rebind the query:
-query = db.Rebind(query)
-```
+* Using Go 1.6 and below with `types.JSONText` and `types.GzippedText` can be _potentially unsafe_, **especially** when used with common auto-scan sqlx idioms like `Select` and `Get`. See [golang bug #13905](https://github.com/golang/go/issues/13905).
 
 ### Backwards Compatibility
 
@@ -79,10 +66,12 @@ usage.
 package main
 
 import (
-    _ "github.com/lib/pq"
     "database/sql"
-    "github.com/jmoiron/sqlx"
+    "fmt"
     "log"
+    
+    _ "github.com/lib/pq"
+    "github.com/jmoiron/sqlx"
 )
 
 var schema = `

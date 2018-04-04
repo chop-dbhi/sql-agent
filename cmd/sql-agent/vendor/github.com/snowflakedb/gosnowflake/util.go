@@ -1,13 +1,9 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
 	"database/sql/driver"
-	"fmt"
-	"net/url"
 	"time"
 )
 
@@ -50,16 +46,4 @@ func toNamedValues(values []driver.Value) []driver.NamedValue {
 		namedValues[idx] = driver.NamedValue{Name: "", Ordinal: idx + 1, Value: value}
 	}
 	return namedValues
-}
-
-//proxyURL constructs a URL string including proxy info. No https proxy is supported.
-func proxyURL(host string, port int, user string, password string) (*url.URL, error) {
-	if host != "" && port != 0 {
-		proxyAuth := ""
-		if user != "" || password != "" {
-			proxyAuth = fmt.Sprintf("%s:%s@", user, password)
-		}
-		return url.Parse(fmt.Sprintf("http://%v%v:%v", proxyAuth, host, port))
-	}
-	return nil, nil
 }

@@ -1,7 +1,5 @@
-// Package gosnowflake is a utility package for Go Snowflake Driver
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
@@ -30,7 +28,7 @@ func TestOCSP(t *testing.T) {
 	transports := []*http.Transport{
 		snowflakeInsecureTransport,
 		SnowflakeTransportSerial,
-		snowflakeTransport,
+		SnowflakeTransport,
 	}
 
 	for _, tgt := range targetURL {
@@ -238,6 +236,9 @@ func TestUnitEncodeCertID(t *testing.T) {
 
 func getCert(addr string) []*x509.Certificate {
 	tcpConn, err := net.DialTimeout("tcp", addr, 4*time.Second)
+	if err != nil {
+		panic(err)
+	}
 	defer tcpConn.Close()
 
 	tcpConn.SetDeadline(time.Now().Add(1 * time.Second))

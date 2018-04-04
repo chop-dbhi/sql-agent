@@ -1,14 +1,10 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
 	"context"
 	"database/sql/driver"
-
-	"github.com/golang/glog"
 )
 
 type snowflakeStmt struct {

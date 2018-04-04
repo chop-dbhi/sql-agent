@@ -8,12 +8,11 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/signal"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/golang/glog"
 )
 
 var (
@@ -141,7 +140,20 @@ type DBTest struct {
 }
 
 func (dbt *DBTest) mustQuery(query string, args ...interface{}) (rows *sql.Rows) {
-	rows, err := dbt.db.Query(query, args...)
+	// handler interrupt signal
+	ctx, cancel := context.WithCancel(context.Background())
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	defer func() {
+		signal.Stop(c)
+	}()
+	go func() {
+		<-c
+		fmt.Println("Caught signal, canceling...")
+		cancel()
+	}()
+
+	rows, err := dbt.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		dbt.fail("query", query, err)
 	}
@@ -178,7 +190,6 @@ func (dbt *DBTest) mustFailDecimalSize(ct *sql.ColumnType) {
 	if ok {
 		dbt.Fatalf("should not return decimal size. %v", ct)
 	}
-	return
 }
 
 func (dbt *DBTest) mustLength(ct *sql.ColumnType) (cLen int64) {
@@ -196,7 +207,6 @@ func (dbt *DBTest) mustFailLength(ct *sql.ColumnType) {
 	if ok {
 		dbt.Fatalf("should not return length. %v", ct)
 	}
-	return
 }
 
 func (dbt *DBTest) mustNullable(ct *sql.ColumnType) (canNull bool) {
@@ -266,10 +276,11 @@ func invalidUserPassErrorTests(invalidDNS string, t *testing.T) {
 
 func TestBogusHostNameParameters(t *testing.T) {
 	invalidDNS := fmt.Sprintf("%s:%s@%s", user, pass, "INVALID_HOST:1234")
-	invalidHostErrorTests(invalidDNS, []string{"no such host", "HTTP Status: 403"}, t)
+	invalidHostErrorTests(invalidDNS, []string{"no such host", "verify account name is correct", "HTTP Status: 403"}, t)
 	invalidDNS = fmt.Sprintf("%s:%s@%s", user, pass, "INVALID_HOST")
-	invalidHostErrorTests(invalidDNS, []string{"read: connection reset by peer.", "EOF", "HTTP Status: 403"}, t)
+	invalidHostErrorTests(invalidDNS, []string{"read: connection reset by peer.", "EOF", "verify account name is correct", "HTTP Status: 403"}, t)
 }
+
 func invalidHostErrorTests(invalidDNS string, mstr []string, t *testing.T) {
 	parameters := url.Values{}
 	if protocol != "" {
@@ -344,6 +355,7 @@ func TestCRUD(t *testing.T) {
 		// Test for unexpected Data
 		var out bool
 		rows := dbt.mustQuery("SELECT * FROM test")
+		defer rows.Close()
 		if rows.Next() {
 			dbt.Error("unexpected Data in empty table")
 		}
@@ -369,10 +381,11 @@ func TestCRUD(t *testing.T) {
 
 		// Read
 		rows = dbt.mustQuery("SELECT value FROM test")
+		defer rows.Close()
 		if rows.Next() {
 			rows.Scan(&out)
-			if true != out {
-				dbt.Errorf("true != %t", out)
+			if !out {
+				dbt.Errorf("%t should be true", out)
 			}
 
 			if rows.Next() {
@@ -394,10 +407,11 @@ func TestCRUD(t *testing.T) {
 
 		// Check Update
 		rows = dbt.mustQuery("SELECT value FROM test")
+		defer rows.Close()
 		if rows.Next() {
 			rows.Scan(&out)
-			if false != out {
-				dbt.Errorf("false != %t", out)
+			if out {
+				dbt.Errorf("%t should be true", out)
 			}
 
 			if rows.Next() {
@@ -429,76 +443,6 @@ func TestCRUD(t *testing.T) {
 	})
 }
 
-func TestSchemaWarehouseIncludingSpace(t *testing.T) {
-	newSchemaName := "TEST SCHEMA"
-	newWarehouseName := "TEST WAREHOUSE"
-	canCreateWarehouse := false
-	runTests(t, dsn, func(dbt *DBTest) {
-		dbt.mustExec(fmt.Sprintf(`CREATE OR REPLACE SCHEMA "%v"`, newSchemaName))
-		_, err := dbt.db.Exec(fmt.Sprintf(`CREATE OR REPLACE WAREHOUSE "%v"`, newWarehouseName))
-		if err != nil {
-			if derr, ok := err.(*SnowflakeError); ok {
-				if derr.Number != 3001 {
-					t.Fatalf("failed to create warehouse with unexpected error. %v", derr)
-				}
-			} else {
-				t.Fatalf("failed to create warehouse with unexpected error. %v", err)
-			}
-		} else {
-			canCreateWarehouse = true
-		}
-	})
-	newDSN := fmt.Sprintf("%s:%s@%s/%s/%s", user, pass, host, dbname, url.QueryEscape(newSchemaName))
-	parameters := url.Values{}
-	parameters.Add("warehouse", newWarehouseName)
-	if protocol != "" {
-		parameters.Add("protocol", protocol)
-	}
-	if account != "" {
-		parameters.Add("account", account)
-	}
-	newDSN += "?" + parameters.Encode()
-	db, err := sql.Open("snowflake", newDSN)
-	if err != nil {
-		t.Fatalf("failed to connect. DSN: %v", newDSN)
-	}
-	defer db.Close()
-	rows, err := db.Query("SELECT CURRENT_SCHEMA(), CURRENT_WAREHOUSE()")
-	if err != nil {
-		t.Fatalf("failed to query. %v", err)
-	}
-	defer rows.Close()
-	if !rows.Next() {
-		t.Fatal("failed to get the current database")
-	}
-	var gotSchemaName sql.NullString
-	var gotWarehouseName sql.NullString
-	if err := rows.Scan(&gotSchemaName, &gotWarehouseName); err != nil {
-		t.Fatalf("failed to scan schema and warehouse names. err: %v", err)
-	}
-	if !gotSchemaName.Valid || gotSchemaName.String != newSchemaName {
-		t.Fatalf("failed to match schema name. expected: %v, got: %v", newSchemaName, gotSchemaName)
-	}
-	if !gotWarehouseName.Valid || gotWarehouseName.String != newWarehouseName {
-		t.Fatalf("failed to match warehouse name. expected: %v, got: %v", newWarehouseName, gotWarehouseName)
-	}
-	runTests(t, dsn, func(dbt *DBTest) {
-		if canCreateWarehouse {
-			_, err := dbt.db.Exec(fmt.Sprintf(`DROP WAREHOUSE IF EXISTS "%v"`, newWarehouseName))
-			if err != nil {
-				if derr, ok := err.(*SnowflakeError); ok {
-					if derr.Number != 3001 {
-						t.Fatalf("failed to drop warehouse with unexpected error. %v", derr)
-					}
-				} else {
-					t.Fatalf("failed to drop warehouse with unexpected error. %v", err)
-				}
-			}
-		}
-		dbt.mustExec(fmt.Sprintf(`DROP SCHEMA IF EXISTS "%v"`, newSchemaName))
-	})
-}
-
 func TestInt(t *testing.T) {
 	runTests(t, dsn, func(dbt *DBTest) {
 		types := []string{"INT", "INTEGER"}
@@ -511,6 +455,7 @@ func TestInt(t *testing.T) {
 			dbt.mustExec("CREATE TABLE test (value " + v + ")")
 			dbt.mustExec("INSERT INTO test VALUES (?)", in)
 			rows = dbt.mustQuery("SELECT value FROM test")
+			defer rows.Close()
 			if rows.Next() {
 				rows.Scan(&out)
 				if in != out {
@@ -535,6 +480,7 @@ func TestFloat32(t *testing.T) {
 			dbt.mustExec("CREATE TABLE test (value " + v + ")")
 			dbt.mustExec("INSERT INTO test VALUES (?)", in)
 			rows = dbt.mustQuery("SELECT value FROM test")
+			defer rows.Close()
 			if rows.Next() {
 				rows.Scan(&out)
 				if in != out {
@@ -558,6 +504,7 @@ func TestFloat64(t *testing.T) {
 			dbt.mustExec("CREATE TABLE test (value " + v + ")")
 			dbt.mustExec("INSERT INTO test VALUES (42.23)")
 			rows = dbt.mustQuery("SELECT value FROM test")
+			defer rows.Close()
 			if rows.Next() {
 				rows.Scan(&out)
 				if expected != out {
@@ -695,7 +642,7 @@ func TestBinaryPlaceholder(t *testing.T) {
 			if err := rows.Scan(&rb); err != nil {
 				dbt.Errorf("failed to scan data. err: %v", err)
 			}
-			if bytes.Compare(b, rb) != 0 {
+			if !bytes.Equal(b, rb) {
 				dbt.Errorf("failed to match data. expected: %v, got: %v", b, rb)
 			}
 		} else {
@@ -710,6 +657,7 @@ func TestBindingInterface(t *testing.T) {
 		var err error
 		rows := dbt.mustQuery(
 			"SELECT 1.0::NUMBER(30,2) as C1, 2::NUMBER(38,0) AS C2, 't3' AS C3, 4.2::DOUBLE AS C4, 'abcd'::BINARY AS C5, true AS C6")
+		defer rows.Close()
 		if !rows.Next() {
 			dbt.Error("failed to query")
 		}
@@ -743,6 +691,7 @@ func TestVariousTypes(t *testing.T) {
 	runTests(t, dsn, func(dbt *DBTest) {
 		rows := dbt.mustQuery(
 			"SELECT 1.0::NUMBER(30,2) as C1, 2::NUMBER(38,0) AS C2, 't3' AS C3, 4.2::DOUBLE AS C4, 'abcd'::BINARY AS C5, true AS C6")
+		defer rows.Close()
 		if !rows.Next() {
 			dbt.Error("failed to query")
 		}
@@ -824,7 +773,7 @@ func TestVariousTypes(t *testing.T) {
 		if canNull {
 			dbt.Errorf("failed to get nullable. %#v", ct[3])
 		}
-		if bytes.Compare(v5, []byte{0xab, 0xcd}) != 0 {
+		if !bytes.Equal(v5, []byte{0xab, 0xcd}) {
 			dbt.Errorf("failed to scan. %#v", v5)
 		}
 		dbt.mustFailDecimalSize(ct[4])
@@ -1015,6 +964,7 @@ func TestSimpleDateTimeTimestampFetch(t *testing.T) {
 	runTests(t, dsn, func(dbt *DBTest) {
 		for _, f := range fetchTypes {
 			rows := dbt.mustQuery("SELECT CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP()")
+			defer rows.Close()
 			if rows.Next() {
 				f(rows)
 			} else {
@@ -1208,7 +1158,7 @@ func TestNULL(t *testing.T) {
 		}
 		if !nb.Valid {
 			dbt.Error("invalid NullBool which should be valid")
-		} else if nb.Bool != true {
+		} else if !nb.Bool {
 			dbt.Errorf("Unexpected NullBool value: %t (should be true)", nb.Bool)
 		}
 
@@ -1276,14 +1226,14 @@ func TestNULL(t *testing.T) {
 			dbt.Fatal(err)
 		}
 		if b != nil {
-			dbt.Error("non-nil []byte wich should be nil")
+			dbt.Error("non-nil []byte which should be nil")
 		}
 		// Read non-nil
 		if err = nonNullStmt.QueryRow().Scan(&b); err != nil {
 			dbt.Fatal(err)
 		}
 		if b == nil {
-			dbt.Error("nil []byte wich should be non-nil")
+			dbt.Error("nil []byte which should be non-nil")
 		}
 		// Insert nil
 		b = nil
@@ -1319,6 +1269,7 @@ func TestNULL(t *testing.T) {
 
 		var out interface{}
 		rows := dbt.mustQuery("SELECT * FROM test")
+		defer rows.Close()
 		if rows.Next() {
 			rows.Scan(&out)
 			if out != nil {
@@ -1408,6 +1359,9 @@ func TestDML(t *testing.T) {
 	runTests(t, dsn, func(dbt *DBTest) {
 		dbt.mustExec("CREATE OR REPLACE TABLE test(c1 int, c2 string)")
 		err := insertData(dbt, false)
+		if err != nil {
+			dbt.Fatalf("failed to insert data: %v", err)
+		}
 		results, err := queryTest(dbt)
 		if err != nil {
 			dbt.Fatalf("failed to query test table: %v", err)
@@ -1416,6 +1370,9 @@ func TestDML(t *testing.T) {
 			dbt.Fatalf("number of returned data didn't match. expected 0, got: %v", len(*results))
 		}
 		err = insertData(dbt, true)
+		if err != nil {
+			dbt.Fatalf("failed to insert data: %v", err)
+		}
 		results, err = queryTest(dbt)
 		if err != nil {
 			dbt.Fatalf("failed to query test table: %v", err)
@@ -1466,6 +1423,9 @@ func queryTestTx(tx *sql.Tx) (*map[int]string, error) {
 	var c1 int
 	var c2 string
 	rows, err := tx.Query("SELECT c1, c2 FROM test")
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	if err != nil {
 		return nil, err
@@ -1485,6 +1445,9 @@ func queryTest(dbt *DBTest) (*map[int]string, error) {
 	var c1 int
 	var c2 string
 	rows, err := dbt.db.Query("SELECT c1, c2 FROM test")
+	if err != nil {
+		return nil, err
+	}
 	defer rows.Close()
 	if err != nil {
 		return nil, err
@@ -1558,48 +1521,6 @@ func TestCancelQuery(t *testing.T) {
 			dbt.Fatal("Timeout failed")
 		}
 	})
-}
-
-func TestOKTA(t *testing.T) {
-	// get environment variables
-	env := func(key, defaultValue string) string {
-		if value := os.Getenv(key); value != "" {
-			return value
-		}
-		return defaultValue
-	}
-	oktaAccount := env("SNOWFLAKE_TEST_OKTA_ACCOUNT", "")
-	oktaUser := env("SNOWFLAKE_TEST_OKTA_USER", "testuser")
-	oktaPassword := env("SNOWFLAKE_TEST_OKTA_PASSWORD", "testpassword")
-	authenticator := env("SNOWFLAKE_TEST_OKTA_URL", "")
-	if authenticator == "" || oktaAccount == "" {
-		// no OKTA test runs
-		return
-	}
-	dsn := fmt.Sprintf("%v:%v@%v?authenticator=%v", oktaUser, oktaPassword, oktaAccount, url.QueryEscape(authenticator))
-	glog.V(2).Infof("DSN: %v\n", dsn)
-	db, err := sql.Open("snowflake", dsn)
-	if err != nil {
-		t.Fatalf("failed to connect. %v, err: %v", dsn, err)
-	}
-	query := "SELECT 1"
-	rows, err := db.Query(query)
-	defer rows.Close()
-	if err != nil {
-		t.Fatalf("failed to run a query. %v, err: %v", query, err)
-	}
-	var v int
-	for rows.Next() {
-		err := rows.Scan(&v)
-		if err != nil {
-			t.Fatalf("failed to get result. err: %v", err)
-		}
-		if v != 1 {
-			t.Fatalf("failed to get 1. got: %v", v)
-		}
-		fmt.Printf("Congrats! You have successfully run %v with Snowflake DB!", query)
-	}
-
 }
 
 func TestInvalidConnection(t *testing.T) {
@@ -1739,6 +1660,167 @@ func TestTimezoneSessionParameter(t *testing.T) {
 		t.Fatalf("failed to get an expected timezone. got: %v", v)
 	}
 	createDSN("UTC")
+}
+
+func TestLargeSetResultCancel(t *testing.T) {
+	runTests(t, dsn, func(dbt *DBTest) {
+		c := make(chan error)
+		ctx := context.Background()
+		ctx, cancel := context.WithCancel(ctx)
+		go func() {
+			// attempt to run a 100 seconds query, but it should be canceled in 1 second
+			timelimit := 100
+			rows, err := dbt.db.QueryContext(
+				ctx,
+				fmt.Sprintf("SELECT COUNT(*) FROM TABLE(GENERATOR(timelimit=>%v))", timelimit))
+			if err != nil {
+				c <- err
+				return
+			}
+			defer rows.Close()
+			c <- nil
+		}()
+		// cancel after 1 second
+		time.Sleep(time.Second)
+		cancel()
+		ret := <-c
+		if ret.Error() != "context canceled" {
+			t.Fatalf("failed to cancel. err: %v", ret)
+		}
+	})
+}
+
+type tcValidateDatabaseParameter struct {
+	dsn       string
+	params    map[string]string
+	errorCode int
+}
+
+func TestValidateDatabaseParameter(t *testing.T) {
+	baseDSN := fmt.Sprintf("%s:%s@%s", user, pass, host)
+	testcases := []tcValidateDatabaseParameter{
+		{
+			dsn:       baseDSN + fmt.Sprintf("/%s/%s", "NOT_EXISTS", "NOT_EXISTS"),
+			errorCode: ErrCodeObjectNotExists,
+		},
+		{
+			dsn:       baseDSN + fmt.Sprintf("/%s/%s", dbname, "NOT_EXISTS"),
+			errorCode: ErrCodeObjectNotExists,
+		},
+		{
+			dsn: baseDSN + fmt.Sprintf("/%s/%s", dbname, schemaname),
+			params: map[string]string{
+				"warehouse": "NOT_EXIST",
+			},
+			errorCode: ErrCodeObjectNotExists,
+		},
+		{
+			dsn: baseDSN + fmt.Sprintf("/%s/%s", dbname, schemaname),
+			params: map[string]string{
+				"role": "NOT_EXIST",
+			},
+			errorCode: 390189, // this already exists
+		},
+	}
+	for idx, tc := range testcases {
+		newDSN := tc.dsn
+		parameters := url.Values{}
+		if protocol != "" {
+			parameters.Add("protocol", protocol)
+		}
+		if account != "" {
+			parameters.Add("account", account)
+		}
+		for k, v := range tc.params {
+			parameters.Add(k, v)
+		}
+		newDSN += "?" + parameters.Encode()
+		db, err := sql.Open("snowflake", newDSN)
+		// actual connection won't happen until run a query
+		if err != nil {
+			t.Fatalf("error creating a connection object: %s", err.Error())
+		}
+		defer db.Close()
+		_, err = db.Exec("SELECT 1")
+		if err == nil {
+			t.Fatal("should cause an error.")
+		}
+		if driverErr, ok := err.(*SnowflakeError); ok {
+			if driverErr.Number != tc.errorCode { // not exist error
+				t.Errorf("got unexpected error: %v in %v", err, idx)
+			}
+		}
+	}
+}
+
+func TestSpecifyWarehouseDatabase(t *testing.T) {
+	dsn := fmt.Sprintf("%s:%s@%s/%s", user, pass, host, dbname)
+	parameters := url.Values{}
+	parameters.Add("account", account)
+	parameters.Add("warehouse", warehouse)
+	// parameters.Add("role", "nopublic") TODO: create nopublic role for test
+	if protocol != "" {
+		parameters.Add("protocol", protocol)
+	}
+	db, err := sql.Open("snowflake", dsn+"?"+parameters.Encode())
+	if err != nil {
+		t.Fatalf("error creating a connection object: %s", err.Error())
+	}
+	defer db.Close()
+	_, err = db.Exec("SELECT 1")
+	if err != nil {
+		t.Fatalf("failed to execute a select 1: %v", err)
+	}
+}
+
+func TestFetchNil(t *testing.T) {
+	runTests(t, dsn, func(dbt *DBTest) {
+		rows := dbt.mustQuery("SELECT * FROM values(3,4),(null, 5) order by 2")
+		defer rows.Close()
+		var c1 sql.NullInt64
+		var c2 sql.NullInt64
+
+		var results []sql.NullInt64
+		for rows.Next() {
+			err := rows.Scan(&c1, &c2)
+			if err != nil {
+				dbt.Fatal(err)
+			}
+			results = append(results, c1)
+		}
+		if results[1].Valid {
+			t.Errorf("First element of second row must be nil (NULL). %v", results)
+		}
+	})
+}
+
+func TestPingInvalidHost(t *testing.T) {
+	config := Config{
+		Account:      "NOT_EXISTS",
+		User:         "BOGUS_USER",
+		Password:     "barbar",
+		LoginTimeout: 10 * time.Second,
+	}
+
+	url, err := DSN(&config)
+	if err != nil {
+		t.Fatalf("failed to parse config. config: %v, err: %v", config, err)
+	}
+
+	db, err := sql.Open("snowflake", url)
+	if err != nil {
+		t.Fatalf("failed to initalize the connetion. err: %v", err)
+	}
+	ctx := context.Background()
+	err = db.PingContext(ctx)
+	if err == nil {
+		t.Fatal("should cause an error")
+	}
+	driverErr, ok := err.(*SnowflakeError)
+
+	if !ok || ok && driverErr.Number != ErrCodeFailedToConnect { // Failed to connect error
+		t.Fatalf("error didn't match")
+	}
 }
 
 func init() {

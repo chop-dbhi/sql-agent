@@ -1,7 +1,5 @@
-// Package gosnowflake is a Go Snowflake Driver for Go's database/sql
-//
-// Copyright (c) 2017 Snowflake Computing Inc. All right reserved.
-//
+// Copyright (c) 2017-2018 Snowflake Computing Inc. All right reserved.
+
 package gosnowflake
 
 import (
@@ -12,8 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/golang/glog"
 )
 
 // goTypeToSnowflake translates Go data type to Snowflake data type.
@@ -171,7 +167,7 @@ func extractTimestamp(srcValue *string) (sec int64, nsec int64, err error) {
 func stringToValue(dest *driver.Value, srcColumnMeta execResponseRowType, srcValue *string) error {
 	if srcValue == nil {
 		glog.V(3).Infof("snowflake data type: %v, raw value: nil", srcColumnMeta.Type)
-		dest = nil
+		*dest = nil
 		return nil
 	}
 	glog.V(3).Infof("snowflake data type: %v, raw value: %v", srcColumnMeta.Type, *srcValue)

@@ -133,13 +133,19 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate the Accept header and parse it to ensure it is
-	// supported.
+	// Check if ping param is set. This will only test the connection
+	// and does not require a query.
+	_, pingOnly := r.URL.Query()["ping"]
+
 	mimetype := r.Header.Get("Accept")
 
-	if mimetype = parseMimetype(mimetype); mimetype == "" {
-		w.WriteHeader(http.StatusNotAcceptable)
-		return
+	// Validate the Accept header and parse it to ensure it is
+	// supported.
+	if !pingOnly {
+		if mimetype = parseMimetype(mimetype); mimetype == "" {
+			w.WriteHeader(http.StatusNotAcceptable)
+			return
+		}
 	}
 
 	var payload Payload
@@ -161,6 +167,14 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte(fmt.Sprintf("problem connecting to database: %s", err)))
+		return
+	}
+
+	if pingOnly {
+		if err := db.Ping(); err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(fmt.Sprintf("problem pinging the database: %s", err)))
+		}
 		return
 	}
 

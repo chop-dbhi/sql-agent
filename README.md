@@ -76,6 +76,10 @@ Other options that are supplied are passed query options if they are known, othe
 
 Alternatively, the `dsn` parameter can be specified which will used directly when [opening a connection](https://golang.org/pkg/database/sql/#Open).
 
+### Ping Connection
+
+To validate the connection, send a POST with the `?ping` query parameter present and it will test the connection only.
+
 ## Details
 
 - Only `SELECT` statements are supported.

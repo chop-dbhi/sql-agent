@@ -122,6 +122,12 @@ type Payload struct {
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
+	// Alive.
+	if r.Method == "GET" || r.Method == "HEAD" {
+		return
+	}
+
+	// Requires POST otherwise.
 	if r.Method != "POST" {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return

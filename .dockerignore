@@ -1,6 +1,0 @@
-.git/
-lib/
-dist/
-!dist/linux-amd64
-!lib/oracle/instantclient_12_1
-!lib/oracle/oci8.pc

@@ -1,5 +1,6 @@
 .DS_Store
 *.sw?
+.dockerignore
 /lib
 /dist
 profile.cov

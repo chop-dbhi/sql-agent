@@ -3,9 +3,18 @@
 
 [[projects]]
   branch = "master"
+  name = "github.com/alexbrainman/odbc"
+  packages = [
+    ".",
+    "api"
+  ]
+  revision = "14913e72bfde8c83720086e5e32d4d8122b9932d"
+
+[[projects]]
+  branch = "master"
   name = "github.com/chop-dbhi/sql-agent"
   packages = ["."]
-  revision = "5341dd02da4b75c87955fea812abb0acad7bad01"
+  revision = "ae17cd76c4bf4ba04dea700e6a58b669820a6ab3"
 
 [[projects]]
   branch = "master"
@@ -14,7 +23,7 @@
     ".",
     "internal/cp"
   ]
-  revision = "2e93935aa9096273693401939a61fb8a9b2c9d14"
+  revision = "c4e5513e46d427e67707ab54c97990301fb56c10"
 
 [[projects]]
   name = "github.com/go-sql-driver/mysql"
@@ -35,7 +44,7 @@
     ".",
     "reflectx"
   ]
-  revision = "cf35089a197953c69420c8d0cecda90809764b1d"
+  revision = "2aeb6a910c2b94f2d5eb53d9895d80e27264ec41"
 
 [[projects]]
   branch = "master"
@@ -44,13 +53,13 @@
     ".",
     "oid"
   ]
-  revision = "d34b9ff171c21ad295489235aec8b6626023cd04"
+  revision = "90697d60dd844d5ef6ff15135d0203f65d2f53b8"
 
 [[projects]]
   branch = "master"
   name = "github.com/mattn/go-oci8"
   packages = ["."]
-  revision = "ea58f36494627dacdde2fb58de13ab3c3cb2522f"
+  revision = "a2928e4a4ebc87c6fd85734514396182b94537c2"
 
 [[projects]]
   name = "github.com/mattn/go-sqlite3"
@@ -73,8 +82,8 @@
 [[projects]]
   name = "github.com/snowflakedb/gosnowflake"
   packages = ["."]
-  revision = "063cf0a64e29e56a633e95e0bc3f6d3a46d810b0"
-  version = "v1.1.6"
+  revision = "e490568afda797e1ad260d946179d580043b5dff"
+  version = "v1.1.7"
 
 [[projects]]
   branch = "master"
@@ -83,13 +92,19 @@
     "md4",
     "ocsp"
   ]
-  revision = "b2aa35443fbc700ab74c586ae79b81c171851023"
+  revision = "75e913eb8a8e3d31a97b216de09de106a7b07681"
 
 [[projects]]
   branch = "master"
   name = "golang.org/x/net"
   packages = ["context"]
-  revision = "b68f30494add4df6bd8ef5e82803f308e7f7c59c"
+  revision = "9ef9f5bb98a1fdc41f8cf6c250a4404b4085e389"
+
+[[projects]]
+  branch = "master"
+  name = "golang.org/x/sys"
+  packages = ["windows"]
+  revision = "77b0e4315053a57ed2962443614bdb28db152054"
 
 [[projects]]
   name = "gopkg.in/yaml.v2"
@@ -100,6 +115,6 @@
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "36c69796f20b3f1d44babc87781c99fa178f1c0185cdc2f55df3ab58393d72f0"
+  inputs-digest = "dfc6006f98460aa3a1dd1f471e91d5bc4195e73f12960daeab5aeb32e401e00e"
   solver-name = "gps-cdcl"
   solver-version = 1

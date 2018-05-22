@@ -270,6 +270,26 @@ var connectors = map[string]connector{
 
 		return conn
 	},
+
+	"odbc": func(params map[string]interface{}) string {
+		toks := make([]string, len(params))
+		i := 0
+
+		for k, v := range params {
+
+			switch k {
+			case "host":
+				k = "server"
+			case "user":
+				k = "username"
+			}
+
+			toks[i] = fmt.Sprintf("%s=%v", k, v)
+			i++
+		}
+
+		return strings.Join(toks, ";")
+	},
 }
 
 // mapBytesToString ensures byte slices that were returned from the database
@@ -297,4 +317,5 @@ var Drivers = map[string]string{
 	"sqlserver":  "mssql",
 	"oracle":     "oci8",
 	"snowflake":  "snowflake",
+	"odbc":       "odbc",
 }

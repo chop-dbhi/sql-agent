@@ -1,12 +1,14 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"mime"
 	"net/http"
+
+	yaml "gopkg.in/yaml.v2"
 
 	"github.com/chop-dbhi/sql-agent"
 
@@ -115,10 +117,10 @@ func main() {
 }
 
 type Payload struct {
-	Driver     string
-	Connection map[string]interface{}
-	SQL        string
-	Params     map[string]interface{}
+	Driver     string                 `yaml:"driver"`
+	Connection map[string]interface{} `yaml:"connection"`
+	SQL        string                 `yaml:"sql"`
+	Params     map[string]interface{} `yaml:"params"`
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request) {
@@ -148,12 +150,21 @@ func handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Decode the body. Assumes YAML or JSON.
 	var payload Payload
 
-	// Decode the body.
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	b, err := ioutil.ReadAll(r.Body)
+	defer r.Body.Close()
+	if err != nil {
 		w.WriteHeader(StatusUnprocessableEntity)
-		w.Write([]byte(fmt.Sprintf("could not decode JSON: %s", err)))
+		w.Write([]byte(fmt.Sprintf("could not read body: %s", err)))
+		return
+	}
+
+	err = yaml.Unmarshal(b, &payload)
+	if err != nil {
+		w.WriteHeader(StatusUnprocessableEntity)
+		w.Write([]byte(fmt.Sprintf("could not decode body: %s", err)))
 		return
 	}
 

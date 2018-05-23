@@ -4,3 +4,4 @@
 /dist
 profile.cov
 profile.tmp
+/cmd/sql-agent/vendor

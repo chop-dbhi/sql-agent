@@ -19,6 +19,7 @@ import (
 	_ "github.com/mattn/go-oci8"
 	_ "github.com/mattn/go-sqlite3"
 	_ "github.com/snowflakedb/gosnowflake"
+	_ "github.com/prestodb/presto-go-client/presto"
 )
 
 var usage = `SQL Agent - HTTP interface

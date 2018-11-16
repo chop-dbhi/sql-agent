@@ -290,6 +290,52 @@ var connectors = map[string]connector{
 
 		return strings.Join(toks, ";")
 	},
+
+	"presto": func(params map[string]interface{}) string {
+		var (
+			query = url.Values{}
+
+			host     interface{}
+			port     interface{}
+			user     string
+			password string
+		)
+
+		for k, v := range params {
+			switch k {
+			case "host":
+				host = v
+			case "port":
+				port = v
+			case "user":
+				user = fmt.Sprint(v)
+			case "password":
+				password = fmt.Sprint(v)
+			default:
+				query.Add(k, fmt.Sprint(v))
+			}
+		}
+
+		u := url.URL{
+			Scheme: "http",
+		}
+
+		if port != nil {
+			u.Host = fmt.Sprintf("%s:%d", host, port)
+		} else {
+			u.Host = fmt.Sprintf("%s", host)
+		}
+
+		if user != "" && password != "" {
+			u.User = url.UserPassword(user, password)
+		} else if user != "" {
+			u.User = url.User(user)
+		}
+
+		u.RawQuery = query.Encode()
+
+		return u.String()
+	},
 }
 
 // mapBytesToString ensures byte slices that were returned from the database
@@ -318,4 +364,5 @@ var Drivers = map[string]string{
 	"oracle":     "oci8",
 	"snowflake":  "snowflake",
 	"odbc":       "odbc",
+	"presto":     "presto",
 }

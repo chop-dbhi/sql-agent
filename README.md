@@ -12,6 +12,7 @@ The supported databases are:
 - Microsoft SQL Server
 - SQLite
 - Snowflake
+- Presto
 
 In addition to the service, this repo also defines a `sqlagent` package for using in other Go programs.
 

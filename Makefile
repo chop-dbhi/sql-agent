@@ -7,7 +7,7 @@ GIT_BRANCH := $(shell git symbolic-ref -q --short HEAD)
 
 build:
 	go build \
-		-o $(GOPATH)/bin/sql-agent \
+		-o ./bin/sql-agent \
 		./cmd/sql-agent
 
 clean:

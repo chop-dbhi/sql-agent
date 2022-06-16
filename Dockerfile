@@ -9,9 +9,6 @@ ARG UNIXODBC_VERSION=2.3.11
 ENV LD_LIBRARY_PATH /usr/lib/instantclient_${INSTANTCLIENT_VERSION}
 ENV ORACLE_HOME /usr/lib/instantclient_${INSTANTCLIENT_VERSION}
 
-ENV LD_LIBRARY_PATH /usr/lib/instantclient_${INSTANTCLIENT_VERSION}
-ENV ORACLE_HOME /usr/lib/instantclient_${INSTANTCLIENT_VERSION}
-
 RUN apt-get update -qq && \
     apt-get install -y --no-install-recommends \
       libaio1 \

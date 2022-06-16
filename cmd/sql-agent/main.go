@@ -8,9 +8,9 @@ import (
 	"mime"
 	"net/http"
 
-	yaml "gopkg.in/yaml.v2"
+	yaml "gopkg.in/yaml.v3"
 
-	"github.com/chop-dbhi/sql-agent"
+	sqlagent "github.com/chop-dbhi/sql-agent"
 
 	_ "github.com/alexbrainman/odbc"
 	_ "github.com/denisenkom/go-mssqldb"
@@ -18,8 +18,8 @@ import (
 	_ "github.com/lib/pq"
 	_ "github.com/mattn/go-oci8"
 	_ "github.com/mattn/go-sqlite3"
-	_ "github.com/snowflakedb/gosnowflake"
 	_ "github.com/prestodb/presto-go-client/presto"
+	_ "github.com/snowflakedb/gosnowflake"
 )
 
 var usage = `SQL Agent - HTTP interface

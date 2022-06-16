@@ -9,10 +9,10 @@ require (
 	github.com/jmoiron/sqlx v1.2.0
 	github.com/lib/pq v1.0.0
 	github.com/mattn/go-oci8 v0.0.0-20181115070430-6eefff3c767c
-	github.com/mattn/go-sqlite3 v1.10.0
+	github.com/mattn/go-sqlite3 v1.14.13
 	github.com/prestodb/presto-go-client v0.0.0-20211201125635-ad28cec17d6c
 	github.com/snowflakedb/gosnowflake v1.1.14
-	gopkg.in/yaml.v2 v2.2.2
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (

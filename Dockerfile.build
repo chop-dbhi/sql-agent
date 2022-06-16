@@ -16,8 +16,6 @@ RUN apt-get update -qq && \
 
 COPY ./lib/oracle/instantclient_${INSTANTCLIENT_VERSION} /usr/lib/instantclient_${INSTANTCLIENT_VERSION}
 COPY ./lib/oracle/oci8.pc /usr/lib/pkgconfig/
-#RUN ln -s /usr/lib/instantclient_21_6/libclntsh.so.21.6 /usr/lib/instantclient_${INSTANTCLIENT_VERSION}/libclntsh.so
-#RUN ln -s /usr/lib/instantclient_21_6/libocci.so.21.6 /usr/lib/instantclient_${INSTANTCLIENT_VERSION}/libocci.so
 
 COPY ./lib/unixODBC-${UNIXODBC_VERSION}.tar.gz /opt/
 WORKDIR /opt

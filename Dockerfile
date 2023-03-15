@@ -34,16 +34,6 @@ RUN cd /opt && \
   ldconfig && \
   rm -rf /opt/unixODBC-${UNIXODBC_VERSION}*
 
-# Install Netezza ODBC driver
-COPY ./lib/netezza /opt/netezza/
-RUN /opt/netezza/unpack -f /usr/local/nz && \
-  odbcinst -i -d -f /opt/netezza/netezza.driver && \
-  echo '/usr/local/nz/lib' >> /etc/ld.so.conf.d/x86_64-linux-gnu.conf && \
-  echo '/usr/local/nz/lib64' >> /etc/ld.so.conf.d/x86_64-linux-gnu.conf && \
-  ldconfig && \
-  rm -rf /opt/netezza && \
-  ln -s /usr/local/nz/bin64/nzodbcsql /usr/local/bin/nzodbcsql
-
 RUN apt-get remove -y aptitude g++ libc6-dev gcc && \
   apt-get -y autoremove && apt-get clean && \
   rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
